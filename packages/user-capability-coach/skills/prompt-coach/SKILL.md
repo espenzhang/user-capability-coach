@@ -76,8 +76,14 @@ with stdin JSON:
 
 Rules for your classification:
 
-- **`issue_type`**: one of `missing_output_contract`, `overloaded_request`, `missing_goal` (v1 visible); or `missing_context`, `missing_constraints`, `conflicting_instructions`, `unbound_reference`, `missing_success_criteria` (shadow — recorded for future, not surfaced); or `null` if the prompt is clear given context.
-- **Set `null` liberally** when context resolves ambiguity — that's the main reason you're classifying. Suppressing regex false-positives is a feature.
+- **`issue_type`** — STRICT enum. Must be one of:
+  - `missing_output_contract`, `overloaded_request`, `missing_goal` (rule + agent)
+  - `missing_context`, `unbound_reference`, `missing_success_criteria`, `conflicting_instructions` (rule + agent)
+  - `missing_constraints` (agent-only)
+  - `null` — when context resolves ambiguity. **Set null liberally** — suppressing regex false-positives is a feature.
+  Invalid values reject the whole classification and fall back to rules (coach will tell you via `agent_cls_error`).
+- **`domain`** — LENIENT. Canonical values: `coding / writing / research / planning / ops / sensitive / other`. Common synonyms like `docs / documentation / email / article` auto-map to `writing`; `api / programming / debug / test / testing` → `coding`; `infra / devops / deploy / security` → `ops`; `design / product / strategy` → `planning`; `analysis / compare` → `research`. Unknown values soft-map to `other` (don't reject the classification). Pick the closest canonical value when you're unsure.
+- **`cost_signal`** — LENIENT. Canonical: `high_risk_guess / clarification_needed / output_format_mismatch / rework_required / none`. Unknown → `none` (soft fallback).
 - **`confidence` and `severity`** are both 0.0–1.0. Below policy thresholds (0.70 / 0.50) the classification won't surface as visible coaching regardless. Be honest — don't inflate to force a tip.
 - **`evidence_summary`** must be a system-generated description, NOT the user's raw words. This is what lands in the local DB.
 - **Omit the field entirely** if you genuinely can't judge (slow fallback to rules is fine).

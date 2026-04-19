@@ -297,29 +297,22 @@ def cmd_select_action(args: argparse.Namespace) -> None:
             if detection is not None:
                 detection_source = "agent"
             else:
-                # build_detection_from_agent returns None only when an
-                # enum value is invalid. Surface the actual bad field
-                # so the agent can fix its call.
-                bad_fields = []
-                for key, enum_cls in [
-                    ("issue_type", IssueType),
-                    ("domain", Domain),
-                    ("cost_signal", CostSignal),
-                ]:
-                    val = agent_cls.get(key)
-                    if val is None or (key == "issue_type" and val is None):
-                        continue
-                    try:
-                        enum_cls(val)
-                    except ValueError:
-                        valid = ",".join(m.value for m in enum_cls)
-                        bad_fields.append(f"{key}={val!r} (valid: {valid})")
-                agent_cls_error = (
-                    "agent_classification had invalid enum value(s): "
-                    + "; ".join(bad_fields)
-                    if bad_fields
-                    else "agent_classification rejected (unknown reason)"
-                )
+                # Only `issue_type` can cause a reject now (domain and
+                # cost_signal have soft fallbacks). Surface the valid
+                # IssueType values so the agent can fix its call.
+                raw_issue = agent_cls.get("issue_type")
+                try:
+                    if raw_issue:
+                        IssueType(raw_issue)
+                    agent_cls_error = (
+                        "agent_classification rejected (unknown reason)"
+                    )
+                except ValueError:
+                    valid = ",".join(m.value for m in IssueType)
+                    agent_cls_error = (
+                        f"agent_classification.issue_type={raw_issue!r} "
+                        f"is not a valid IssueType (valid: {valid})"
+                    )
         if agent_cls_error:
             sys.stderr.write(f"warning: {agent_cls_error}\n")
     if detection is None:

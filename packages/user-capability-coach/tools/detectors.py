@@ -748,20 +748,79 @@ def _estimate_complexity(text: str) -> float:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+# Common domain synonyms agents reach for → canonical enum value. Keeping
+# the Domain enum fixed for pattern-aggregation stability; aliases here
+# let agents use natural vocabulary without triggering a rejection.
+_DOMAIN_ALIASES: dict[str, Domain] = {
+    "docs": Domain.WRITING,
+    "documentation": Domain.WRITING,
+    "doc": Domain.WRITING,
+    "email": Domain.WRITING,
+    "article": Domain.WRITING,
+    "api": Domain.CODING,
+    "programming": Domain.CODING,
+    "debug": Domain.CODING,
+    "debugging": Domain.CODING,
+    "test": Domain.CODING,
+    "testing": Domain.CODING,
+    "infra": Domain.OPS,
+    "infrastructure": Domain.OPS,
+    "devops": Domain.OPS,
+    "deploy": Domain.OPS,
+    "deployment": Domain.OPS,
+    "security": Domain.OPS,
+    "design": Domain.PLANNING,
+    "product": Domain.PLANNING,
+    "strategy": Domain.PLANNING,
+    "analysis": Domain.RESEARCH,
+    "compare": Domain.RESEARCH,
+}
+
+
+def _resolve_domain(raw: str | None, text: str) -> Domain:
+    """Lenient domain parse. Tries: exact enum → lower-cased alias → rule
+    classifier on text → OTHER. Always returns a Domain, never raises."""
+    if not raw:
+        return _classify_domain(text)
+    try:
+        return Domain(raw)
+    except ValueError:
+        pass
+    alias = _DOMAIN_ALIASES.get(raw.lower())
+    if alias is not None:
+        return alias
+    # Unknown value → don't reject the whole classification; map to OTHER.
+    return Domain.OTHER
+
+
+def _resolve_cost_signal(raw: str | None) -> CostSignal:
+    """Lenient cost_signal parse. Unknown → NONE rather than rejecting."""
+    if not raw:
+        return CostSignal.NONE
+    try:
+        return CostSignal(raw)
+    except ValueError:
+        return CostSignal.NONE
+
+
 def build_detection_from_agent(
     agent_cls: dict,
     text: str,
 ) -> "DetectionOutput | None":
     """Construct a DetectionOutput from an agent-supplied classification.
 
-    Agents with full conversation context send their own judgment via
-    the `agent_classification` stdin field; it takes precedence over
-    rule-based `detect()`. Returns None (signalling "fall back to
-    rules") when the payload is malformed.
+    Strict fields (reject-on-invalid):
+      - issue_type: must be a valid IssueType enum or null
 
-    Accepts any IssueType — including shadow-only ones. Policy then
-    applies V1_VISIBLE_ISSUES filtering so shadow types still accumulate
-    as observations without surfacing visible coaching.
+    Lenient fields (soft-map on invalid):
+      - domain: unknown values try aliases (docs → writing etc.) then
+        fall back to _classify_domain(text), finally OTHER. Never rejects.
+      - cost_signal: unknown → NONE, never rejects.
+
+    Only issue_type strictness is preserved because it drives pattern
+    aggregation and visible coaching — getting it wrong is a real policy
+    bug. Domain and cost_signal are classification metadata where a soft
+    fallback preserves the rest of the agent's judgment.
     """
     if not isinstance(agent_cls, dict):
         return None
@@ -770,12 +829,10 @@ def build_detection_from_agent(
         issue_type: IssueType | None = (
             IssueType(raw_issue) if raw_issue else None
         )
-        raw_domain = agent_cls.get("domain")
-        domain = Domain(raw_domain) if raw_domain else _classify_domain(text)
-        raw_cost = agent_cls.get("cost_signal", "none")
-        cost = CostSignal(raw_cost) if raw_cost else CostSignal.NONE
     except ValueError:
         return None
+    domain = _resolve_domain(agent_cls.get("domain"), text)
+    cost = _resolve_cost_signal(agent_cls.get("cost_signal"))
 
     # Agent-supplied flags override; else fall back to rule classification.
     if "is_sensitive" in agent_cls:

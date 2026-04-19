@@ -220,6 +220,45 @@ class TestDetectorInvariants:
         )
         assert out is None
 
+    def test_build_detection_domain_alias_docs_maps_to_writing(self):
+        """Common agent vocabulary 'docs' should resolve to writing, not
+        reject the whole classification."""
+        from tools.detectors import build_detection_from_agent
+        out = build_detection_from_agent(
+            {"issue_type": "missing_output_contract",
+             "confidence": 0.8, "severity": 0.75,
+             "domain": "docs"},
+            "help me write API docs",
+        )
+        assert out is not None
+        assert out.domain.value == "writing"
+
+    def test_build_detection_unknown_domain_falls_back_to_other(self):
+        """Totally unknown domain → OTHER, don't reject."""
+        from tools.detectors import build_detection_from_agent
+        out = build_detection_from_agent(
+            {"issue_type": "missing_goal",
+             "confidence": 0.8, "severity": 0.75,
+             "domain": "photography"},
+            "critique my photos",
+        )
+        assert out is not None
+        assert out.domain.value == "other"
+
+    def test_build_detection_bad_cost_signal_falls_back(self):
+        """Unknown cost_signal → NONE, don't reject."""
+        from tools.detectors import build_detection_from_agent
+        out = build_detection_from_agent(
+            {"issue_type": "missing_goal",
+             "confidence": 0.8, "severity": 0.75,
+             "cost_signal": "bogus_cost"},
+            "text",
+        )
+        assert out is not None
+        # Candidate still present
+        assert len(out.candidates) == 1
+        assert out.candidates[0].cost_signal.value == "none"
+
     def test_empty_input_no_candidates(self):
         for phrase in ["", "   ", "\n\n\t"]:
             r = detect(phrase)
