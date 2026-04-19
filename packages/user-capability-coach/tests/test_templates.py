@@ -128,6 +128,32 @@ class TestFirstUseDisclosure:
 
 # ── Status and why-reminded ────────────────────────────────────────────────
 
+class TestPostTipModeFallback:
+    """post_answer_tip must not return an empty string when given a mode
+    that isn't explicitly keyed in the template dict — otherwise adding
+    a new CoachMode (STRICT) silently breaks visible coaching text."""
+
+    @pytest.mark.parametrize("issue", [
+        IssueType.MISSING_OUTPUT_CONTRACT,
+        IssueType.OVERLOADED_REQUEST,
+        IssueType.MISSING_GOAL,
+        IssueType.MISSING_CONTEXT,
+        IssueType.UNBOUND_REFERENCE,
+    ])
+    def test_strict_mode_falls_back_to_standard(self, issue):
+        # Every visible issue must produce non-empty text in strict.
+        assert templates.post_answer_tip(issue, CoachMode.STRICT, "中文 prompt")
+        assert templates.post_answer_tip(issue, CoachMode.STRICT, "english prompt")
+
+    def test_strict_matches_standard_text_when_no_override(self):
+        # Strict currently has no dedicated copy — it should render
+        # exactly what standard would render for the same issue.
+        for issue in (IssueType.MISSING_OUTPUT_CONTRACT, IssueType.MISSING_GOAL):
+            strict_zh = templates.post_answer_tip(issue, CoachMode.STRICT, "中文")
+            standard_zh = templates.post_answer_tip(issue, CoachMode.STANDARD, "中文")
+            assert strict_zh == standard_zh
+
+
 class TestPromotedShadowTemplates:
     """④ promoted all 5 formerly-shadow types; each must have
     non-empty templates in all 4 surfaces, ZH + EN."""

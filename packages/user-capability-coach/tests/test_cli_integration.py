@@ -659,7 +659,11 @@ class TestAgentFirstClassification:
         assert data["detection_source"] == "rules", "should fall back"
         # Rules see missing_output_contract → POST tip
         assert data["action"] == "post_answer_tip"
-        assert "malformed" in result.stderr.lower()
+        # Error is surfaced BOTH in stdout (for callers that capture it)
+        # AND in stderr (for humans watching the terminal).
+        assert "not_a_real_type" in result.stderr
+        assert "agent_cls_error" in data
+        assert "not_a_real_type" in data["agent_cls_error"]
 
     def test_no_agent_classification_uses_rules(self, profile):
         """Backwards compat: omit agent_classification → rule path."""

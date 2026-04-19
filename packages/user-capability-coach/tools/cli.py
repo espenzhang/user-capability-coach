@@ -284,16 +284,44 @@ def cmd_select_action(args: argparse.Namespace) -> None:
     # through to rules rather than erroring — this keeps the CLI
     # resilient to agent misconfiguration.
     detection_source = "rules"
+    agent_cls_error: str | None = None
     detection = None
     if agent_cls is not None:
-        detection = build_detection_from_agent(agent_cls, prompt_text)
-        if detection is not None:
-            detection_source = "agent"
-        else:
-            sys.stderr.write(
-                "warning: agent_classification was malformed; "
-                "falling back to rule-based detect()\n"
+        if not isinstance(agent_cls, dict):
+            agent_cls_error = (
+                f"agent_classification must be a JSON object, got "
+                f"{type(agent_cls).__name__}"
             )
+        else:
+            detection = build_detection_from_agent(agent_cls, prompt_text)
+            if detection is not None:
+                detection_source = "agent"
+            else:
+                # build_detection_from_agent returns None only when an
+                # enum value is invalid. Surface the actual bad field
+                # so the agent can fix its call.
+                bad_fields = []
+                for key, enum_cls in [
+                    ("issue_type", IssueType),
+                    ("domain", Domain),
+                    ("cost_signal", CostSignal),
+                ]:
+                    val = agent_cls.get(key)
+                    if val is None or (key == "issue_type" and val is None):
+                        continue
+                    try:
+                        enum_cls(val)
+                    except ValueError:
+                        valid = ",".join(m.value for m in enum_cls)
+                        bad_fields.append(f"{key}={val!r} (valid: {valid})")
+                agent_cls_error = (
+                    "agent_classification had invalid enum value(s): "
+                    + "; ".join(bad_fields)
+                    if bad_fields
+                    else "agent_classification rejected (unknown reason)"
+                )
+        if agent_cls_error:
+            sys.stderr.write(f"warning: {agent_cls_error}\n")
     if detection is None:
         detection = detect(prompt_text)
 
@@ -381,6 +409,11 @@ def cmd_select_action(args: argparse.Namespace) -> None:
         "is_sensitive": detection.is_sensitive,
         "detection_source": detection_source,  # "agent" | "rules"
     }
+    if agent_cls_error:
+        # Surface agent_classification errors in stdout JSON so the
+        # caller can see exactly why it fell back to rules (stderr
+        # warnings are often discarded by subprocess callers).
+        out["agent_cls_error"] = agent_cls_error
     serializers.write_stdout_json(out)
 
 

@@ -182,9 +182,22 @@ POST_TIP_EN: dict[IssueType, dict[CoachMode, str]] = {
 
 
 def post_answer_tip(issue: IssueType, mode: CoachMode, prompt_text: str) -> str:
-    if _is_chinese(prompt_text):
-        return POST_TIP_ZH.get(issue, {}).get(mode, "")
-    return POST_TIP_EN.get(issue, {}).get(mode, "")
+    """Return post-answer coaching text for an issue + mode.
+
+    Falls back through mode tiers so adding a new CoachMode (e.g. STRICT)
+    doesn't silently return empty strings — strict shares standard's text
+    because the two differ only in invocation frequency, not in phrasing.
+    Light → light text; standard or strict → standard text (standard fallback
+    to light if missing).
+    """
+    table = POST_TIP_ZH if _is_chinese(prompt_text) else POST_TIP_EN
+    inner = table.get(issue, {})
+    return (
+        inner.get(mode)
+        or inner.get(CoachMode.STANDARD)
+        or inner.get(CoachMode.LIGHT)
+        or ""
+    )
 
 
 # ── Pre-answer micro-nudge (standard only) ────────────────────────────────────
