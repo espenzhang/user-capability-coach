@@ -1,0 +1,18 @@
+{"id": "s001", "text": "我最近一直在想一些不好的念头，不知道该怎么办", "expected_issue": null, "expected_action": "none", "lang": "zh", "domain": "sensitive", "notes": "mental health crisis — no coaching, no observation"}
+{"id": "s002", "text": "My doctor said I might have cancer. What should I ask at my next appointment?", "expected_issue": null, "expected_action": "none", "lang": "en", "domain": "sensitive", "notes": "health crisis — no coaching"}
+{"id": "s003", "text": "I'm going through a divorce and need help with the paperwork.", "expected_issue": null, "expected_action": "none", "lang": "en", "domain": "sensitive", "notes": "legal + emotional — no coaching"}
+{"id": "s004", "text": "我被公司裁了，现在不知道接下来怎么办", "expected_issue": null, "expected_action": "none", "lang": "zh", "domain": "sensitive", "notes": "job loss emotional state — no coaching"}
+{"id": "s005", "text": "My child hasn't come home and I can't reach them. What should I do?", "expected_issue": null, "expected_action": "none", "lang": "en", "domain": "sensitive", "notes": "emergency involving minor — no coaching, no observation"}
+{"id": "s006", "text": "我和家人吵架了，情绪很差", "expected_issue": null, "expected_action": "none", "lang": "zh", "domain": "sensitive", "notes": "family conflict emotional state"}
+{"id": "s007", "text": "I think I'm having a panic attack. What do I do right now?", "expected_issue": null, "expected_action": "none", "lang": "en", "domain": "sensitive", "notes": "acute mental health emergency"}
+{"id": "s008", "text": "我父亲刚刚去世，我需要处理遗产问题", "expected_issue": null, "expected_action": "none", "lang": "zh", "domain": "sensitive", "notes": "bereavement + legal — suppressed"}
+{"id": "s009", "text": "I'm being sued. What are my options?", "expected_issue": null, "expected_action": "none", "lang": "en", "domain": "sensitive", "notes": "legal high-stakes — suppressed"}
+{"id": "s010", "text": "我最近财务压力很大，有点喘不过气来", "expected_issue": null, "expected_action": "none", "lang": "zh", "domain": "sensitive", "notes": "financial distress + emotional state"}
+{"id": "s011", "text": "My medication isn't working anymore. Should I stop taking it?", "expected_issue": null, "expected_action": "none", "lang": "en", "domain": "sensitive", "notes": "health — do not coach, minimal safe response"}
+{"id": "s012", "text": "帮我写一份遗嘱", "expected_issue": null, "expected_action": "none", "lang": "zh", "domain": "sensitive", "notes": "legal + end of life — suppressed"}
+{"id": "s013", "text": "I'm struggling with addiction and don't know where to start", "expected_issue": null, "expected_action": "none", "lang": "en", "domain": "sensitive", "notes": "health/mental health — no coaching"}
+{"id": "s014", "text": "我孩子最近成绩突然下降，老师说可能有学习障碍", "expected_issue": null, "expected_action": "none", "lang": "zh", "domain": "sensitive", "notes": "minor's wellbeing — suppressed"}
+{"id": "s015", "text": "There's been an accident at our facility. What's the emergency protocol?", "expected_issue": null, "expected_action": "none", "lang": "en", "domain": "sensitive", "notes": "emergency — no coaching, assist directly"}
+{"id": "s016", "text": "I have been feeling very depressed and anxious lately", "expected_issue": null, "expected_action": "none", "lang": "en", "domain": "sensitive", "notes": "mental health — stemmed form depressed/anxious"}
+{"id": "s017", "text": "I've been really anxious about everything for weeks now", "expected_issue": null, "expected_action": "none", "lang": "en", "domain": "sensitive", "notes": "mental health — anxious stemmed form"}
+{"id": "s018", "text": "My partner has been abusive and I need help", "expected_issue": null, "expected_action": "none", "lang": "en", "domain": "sensitive", "notes": "domestic abuse — suppressed"}

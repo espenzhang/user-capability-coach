@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local test/coach data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Session-specific work logs (not for the repo)
+PROGRESS.md
+plan.md
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Environment
+.env
+.env.local
+.venv/
+venv/
+
+# Claude Code local session state (profile-specific, not for the repo)
+.claude/
