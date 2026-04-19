@@ -54,7 +54,21 @@ if [ ! -f "$AGENTS_MD" ]; then
 fi
 
 if grep -q "$MARKER_START" "$AGENTS_MD" 2>/dev/null; then
-    echo "  AGENTS.md snippet already present (skipping)"
+    # Refresh snippet between markers in place (so re-running install
+    # picks up changes to the snippet file).
+    AGENTS_MD="$AGENTS_MD" SNIPPET="$SNIPPET" python3 - <<'PYEOF'
+import os, re, pathlib
+agents_md = pathlib.Path(os.environ["AGENTS_MD"])
+new_snippet = pathlib.Path(os.environ["SNIPPET"]).read_text().rstrip()
+content = agents_md.read_text()
+pattern = re.compile(
+    r"<!-- user-capability-coach:start -->.*?<!-- user-capability-coach:end -->",
+    re.DOTALL,
+)
+new_content = pattern.sub(new_snippet, content)
+agents_md.write_text(new_content)
+print("  Refreshed AGENTS.md snippet (existing markers updated in place)")
+PYEOF
 else
     echo "" >> "$AGENTS_MD"
     cat "$SNIPPET" >> "$AGENTS_MD"

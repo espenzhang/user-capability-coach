@@ -55,6 +55,7 @@ def test_coach_mode_values():
     assert CoachMode.OFF.value == "off"
     assert CoachMode.LIGHT.value == "light"
     assert CoachMode.STANDARD.value == "standard"
+    assert CoachMode.STRICT.value == "strict"
 
 
 def test_domain_sensitive_exists():

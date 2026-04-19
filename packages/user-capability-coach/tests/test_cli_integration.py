@@ -329,6 +329,21 @@ class TestMemoryImportCLI:
         assert len(data["errors"]) >= 1
 
 
+class TestStrictModeCLI:
+    def test_set_mode_strict_persists(self, profile):
+        run_coach("enable", profile=profile)
+        result = run_coach("set-mode", "strict", profile=profile)
+        assert result.returncode == 0
+        status = run_coach("status", profile=profile).stdout
+        assert "strict" in status
+
+    def test_set_mode_invalid_lists_strict(self, profile):
+        """Invalid value errors out with strict listed as a choice."""
+        result = run_coach("set-mode", "aggressive", profile=profile)
+        assert result.returncode != 0
+        assert "strict" in result.stderr.lower()
+
+
 class TestDismissCLI:
     def test_dismiss_downgrades_action_to_silent_rewrite(self, profile):
         """After `coach dismiss`, a weak prompt should not get post_answer_tip."""

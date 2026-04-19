@@ -69,6 +69,43 @@ class TestSensitiveSuppression:
 
 # ── Budget enforcement ──────────────────────────────────────────────────────
 
+class TestStrictMode:
+    """Strict mode raises the 7-day budgets so high-volume users aren't
+    silenced mid-week, and leaves every other gate (dismissal, sensitive,
+    urgent, cooldown, observation period) identical to standard."""
+
+    def test_strict_proactive_budget_higher_than_standard(self):
+        """proactive_count_7d=5 exhausts standard (cap=4) but not strict (cap=10)."""
+        inp_standard = _make_input("帮我写一个接口文档", mode=CoachMode.STANDARD, proactive_7d=5)
+        inp_strict = _make_input("帮我写一个接口文档", mode=CoachMode.STRICT, proactive_7d=5)
+        assert select_action(inp_standard).action == Action.SILENT_REWRITE
+        assert select_action(inp_strict).action in (
+            Action.POST_ANSWER_TIP, Action.PRE_ANSWER_MICRO_NUDGE,
+        )
+
+    def test_strict_budget_does_eventually_exhaust(self):
+        """strict budget is 10/7d, so proactive_count_7d=10 does silence it."""
+        inp = _make_input("帮我写一个接口文档", mode=CoachMode.STRICT, proactive_7d=10)
+        result = select_action(inp)
+        assert result.action == Action.SILENT_REWRITE
+        assert "budget" in (result.suppressed_reason or "")
+
+    def test_strict_still_respects_dismissal(self):
+        """coach dismiss overrides strict too — user's explicit request wins."""
+        inp = _make_input(
+            "帮我写一个接口文档", mode=CoachMode.STRICT, user_dismissed=True,
+        )
+        result = select_action(inp)
+        assert result.action == Action.SILENT_REWRITE
+        assert result.suppressed_reason == "user_dismissed"
+
+    def test_strict_still_respects_sensitive(self):
+        """Sensitive domain suppresses strict too."""
+        inp = _make_input("我最近一直在想一些不好的念头", mode=CoachMode.STRICT)
+        result = select_action(inp)
+        assert result.action == Action.NONE
+
+
 class TestBudget:
     def test_budget_exhausted_light(self):
         inp = _make_input("帮我写一个接口文档", mode=CoachMode.LIGHT, proactive_7d=2)

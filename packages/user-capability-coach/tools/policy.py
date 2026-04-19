@@ -20,8 +20,10 @@ class PolicyConfig:
     # Annoyance budget per 7-day rolling window
     light_max_proactive_per_7d: int = 2
     standard_max_proactive_per_7d: int = 4
+    strict_max_proactive_per_7d: int = 10
     light_max_retrospective_per_7d: int = 1
     standard_max_retrospective_per_7d: int = 1
+    strict_max_retrospective_per_7d: int = 3
     # Pattern thresholds for retrospective_reminder
     pattern_min_evidence: int = 4
     pattern_min_sessions: int = 3
@@ -168,11 +170,12 @@ def select_action(inp: PolicyInput, cfg: PolicyConfig = DEFAULT_CONFIG) -> Polic
     best = max(visible_candidates, key=lambda c: c.severity * c.confidence)
 
     # Check annoyance budget
-    budget = (
-        cfg.light_max_proactive_per_7d
-        if mode == CoachMode.LIGHT
-        else cfg.standard_max_proactive_per_7d
-    )
+    if mode == CoachMode.LIGHT:
+        budget = cfg.light_max_proactive_per_7d
+    elif mode == CoachMode.STRICT:
+        budget = cfg.strict_max_proactive_per_7d
+    else:
+        budget = cfg.standard_max_proactive_per_7d
 
     # User dismissed recently → downgrade
     if inp.user_dismissed_recently:
@@ -267,11 +270,12 @@ def should_emit_retrospective(
             return False, f"cooldown:{days_since}d_since_last_of_{cfg.pattern_cooldown_days}d"
 
     # Retrospective budget
-    retro_budget = (
-        cfg.light_max_retrospective_per_7d
-        if inp.mode == CoachMode.LIGHT
-        else cfg.standard_max_retrospective_per_7d
-    )
+    if inp.mode == CoachMode.LIGHT:
+        retro_budget = cfg.light_max_retrospective_per_7d
+    elif inp.mode == CoachMode.STRICT:
+        retro_budget = cfg.strict_max_retrospective_per_7d
+    else:
+        retro_budget = cfg.standard_max_retrospective_per_7d
     if inp.retrospective_count_7d >= retro_budget:
         return False, f"retrospective_budget_exhausted({inp.retrospective_count_7d}/{retro_budget})"
 

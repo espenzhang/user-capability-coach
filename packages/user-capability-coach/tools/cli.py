@@ -5,7 +5,7 @@ Usage:
   coach enable
   coach disable
   coach status
-  coach set-mode <off|light|standard>
+  coach set-mode <off|light|standard|strict>
   coach set-memory <on|off>
   coach set-sensitive-logging <on|off>    (opt into sensitive-domain logging)
   coach dismiss                           (user said "don't remind me")
@@ -576,7 +576,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="Show current status")
 
     p_mode = sub.add_parser("set-mode", help="Set coaching mode")
-    p_mode.add_argument("mode", choices=["off", "light", "standard"])
+    p_mode.add_argument("mode", choices=["off", "light", "standard", "strict"])
 
     p_mem = sub.add_parser("set-memory", help="Enable or disable long-term memory")
     p_mem.add_argument("value", choices=["on", "off"])

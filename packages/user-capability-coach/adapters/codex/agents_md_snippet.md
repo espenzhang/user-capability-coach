@@ -6,10 +6,11 @@ Two optional skills are installed: `prompt-coach` and `growth-coach`. **Both are
 To enable: user says "turn on prompt coach" or "开启 coaching" → run `coach enable`.
 To disable: run `coach disable`.
 
-**prompt-coach** — Triggers only when:
-- Coaching is enabled (mode ≠ off)
-- The user's current request has a clear, high-confidence gap (missing output format, bundled multi-phase request, or no stated goal)
-- The gap will meaningfully reduce answer quality or require high-risk guessing
+**prompt-coach triggering depends on `coach status` mode:**
+
+- **off** — never invoke.
+- **light / standard** — invoke when YOU judge the user's current request has a clear, high-confidence gap (missing output format, bundled multi-phase request, no stated goal, etc.) that will meaningfully reduce answer quality.
+- **strict** — invoke `coach select-action` BEFORE responding to any non-trivial request (generating code, docs, plans, reviews, debugging help). Pass your `agent_classification` based on full conversation context. The user opted into aggressive checking — do not skip. Trivial exchanges (greetings, yes/no, acks) are exempt.
 
 **growth-coach** — Triggers only when:
 - Coaching is enabled AND long-term memory is on AND 14-day observation period has passed

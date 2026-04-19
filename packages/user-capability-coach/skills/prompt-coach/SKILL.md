@@ -1,22 +1,31 @@
 ---
 name: prompt-coach
 description: |
-  Single-turn instant coaching for prompt quality gaps.
+  Single-turn instant coaching for prompt quality gaps. Triggering depends on `coach status` mode.
 
-  TRIGGER ONLY when ALL of the following are true:
-  1. The user has run `coach enable` (mode is NOT "off")
-  2. The current request has a CLEAR, HIGH-CONFIDENCE gap in one of the v1 types:
-     - missing_output_contract: user wants output but gave no format preference
-     - overloaded_request: 3+ distinct cognitive phases bundled in one request
-     - missing_goal: no recognizable intent verb or goal stated
-  3. The gap is likely to reduce answer quality, force high-risk guessing, or require rework
+  MODE = STRICT (user opted into aggressive checking):
+  - ALWAYS invoke `coach select-action` BEFORE responding to any non-trivial request
+    (writing code, docs, plans, explanations, debug help, refactoring, reviews). Pass
+    your best `agent_classification` built from full conversation context.
+  - Exempt: pure greetings, yes/no acks, one-word replies.
+  - Do NOT skip the call because "the prompt looks fine" — in strict the user wants
+    you to check every substantive request. The CLI's policy still decides whether
+    a visible tip surfaces; your job is to always give it the data.
 
-  DO NOT TRIGGER when:
-  - mode = "off" (check via `coach status` or `coach select-action`)
-  - The request is short but clear (short ≠ weak)
-  - The user seems urgent, emotional, or in a sensitive context
-  - Another coaching note was already given this turn
-  - The gap is minor and the task can be completed reliably via silent_rewrite
+  MODE = LIGHT or STANDARD:
+  - Invoke prompt-coach only when ALL of:
+    1. The current request has a CLEAR, HIGH-CONFIDENCE gap in one of:
+       missing_output_contract / overloaded_request / missing_goal /
+       missing_context / unbound_reference / missing_success_criteria /
+       conflicting_instructions / missing_constraints
+    2. The gap is likely to reduce answer quality, force guessing, or require rework
+    3. Not urgent, not emotional, not sensitive
+    4. No coaching note already given this turn
+    5. The gap isn't minor enough that silent_rewrite handles it
+
+  MODE = OFF: never invoke.
+
+  Determine mode once at session start via `coach status` and remember it.
 version: "1.0.0"
 ---
 

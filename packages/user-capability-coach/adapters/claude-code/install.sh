@@ -63,7 +63,24 @@ if [ ! -f "$CLAUDE_MD" ]; then
 fi
 
 if grep -q "$MARKER_START" "$CLAUDE_MD" 2>/dev/null; then
-    echo "  CLAUDE.md snippet already present (skipping)"
+    # Refresh the snippet in place so re-running install picks up any
+    # changes (new modes, updated instructions). Uses Python for portable
+    # multi-line replacement between the two markers.
+    CLAUDE_MD="$CLAUDE_MD" SNIPPET="$SNIPPET" python3 - <<'PYEOF'
+import os, re, pathlib
+claude_md = pathlib.Path(os.environ["CLAUDE_MD"])
+new_snippet = pathlib.Path(os.environ["SNIPPET"]).read_text().rstrip() + "\n"
+content = claude_md.read_text()
+pattern = re.compile(
+    r"<!-- user-capability-coach:start -->.*?<!-- user-capability-coach:end -->",
+    re.DOTALL,
+)
+# Strip trailing newline from new_snippet's markers-end for clean replacement
+new_block = new_snippet.strip()
+new_content = pattern.sub(new_block, content)
+claude_md.write_text(new_content)
+print("  Refreshed CLAUDE.md snippet (existing markers updated in place)")
+PYEOF
 else
     echo "" >> "$CLAUDE_MD"
     cat "$SNIPPET" >> "$CLAUDE_MD"

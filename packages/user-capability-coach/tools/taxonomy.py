@@ -70,6 +70,12 @@ class CoachMode(str, Enum):
     OFF = "off"
     LIGHT = "light"
     STANDARD = "standard"
+    # Strict mode: agent is instructed (via CLAUDE.md) to invoke
+    # `coach select-action` BEFORE responding to any non-trivial request,
+    # instead of relying on Claude's discretionary skill invocation. Also
+    # raises the 7-day budget caps so a high-volume user doesn't hit the
+    # limit mid-week and revert to silent.
+    STRICT = "strict"
 
 
 class Domain(str, Enum):
