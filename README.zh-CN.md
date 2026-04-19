@@ -95,6 +95,70 @@ bash adapters/codex/install.sh
 coach enable       # 任何 shell
 ```
 
+## 用户实际看到什么
+
+### 示例 1 —— 单轮提示（最常见）
+
+**用户**: `帮我写一个接口文档`
+
+**没 coach 时**: agent 猜格式，输出冗长 markdown，用户再追问。
+
+**有 coach 时**（`light` 模式，`coach enable` 之后）：
+
+> [用默认 markdown 格式给出的接口文档]
+>
+> ---
+>
+> 💡 下次加一句输出格式说明会让结果更直接可用，比如：「输出 markdown 表格」「给编号列表」。
+
+一句话，附在答案**之后**。用户完全可以忽略继续。
+
+### 示例 2 —— 会话内模式提醒
+
+用户在同一会话里连续 3 次含糊提问（措辞各异但缺口一样），到第 4 轮 —— **即使第 4 轮的 prompt 本身没问题**：
+
+> [对当前 prompt 的答案]
+>
+> ---
+>
+> 📊 这个会话里最近几次你的请求里都没明确说要什么结果。下次开头固定一个意图动词（总结/批改/重写/评审），能少一两轮澄清。
+
+同一 (session, issue) 组合一个会话最多触发 1 次。不受 14 天观察期约束。
+
+### 示例 3 —— agent 用上下文压制规则误报
+
+**用户，第 N-1 轮**: `please write the docs as markdown bullet points`
+**用户，第 N 轮**: `帮我写一个接口文档`
+
+光看第 N 轮，规则会标成 `missing_output_contract` —— 但 agent 看过了第 N-1 轮。agent 传给 coach:
+
+```json
+{
+  "text": "帮我写一个接口文档",
+  "session_id": "conv-xyz",
+  "agent_classification": { "issue_type": null,
+    "evidence_summary": "prior turn already specified markdown bullets" }
+}
+```
+
+Coach 返回 `action: silent_rewrite`。不提示。上下文赢。
+
+### 示例 4 —— `coach why-reminded`
+
+长期提醒刚触发后，用户问：
+
+```
+$ coach why-reminded
+上次提醒的原因:
+• 问题类型: missing_output_contract
+• 过去记录次数: 6 次，涉及 4 个会话
+• 其中造成明显成本的次数: 3 次
+• 上次提醒时间: never（冷却期 14 天）
+• 本次允许原因: evidence=6>=4, sessions=4>=3, cost=3>=2, cooldown=ok
+```
+
+如果证据链无法构造（数据缺失/损坏），提醒本来就不会触发。
+
 ## 快速上手
 
 ```bash

@@ -95,6 +95,70 @@ bash adapters/codex/install.sh
 coach enable       # in any shell
 ```
 
+## What the user actually sees
+
+### Example 1 — single-turn tip (most common)
+
+**User**: `帮我写一个接口文档`
+
+**Without coach**: agent guesses at format, produces verbose markdown, user re-asks.
+
+**With coach** (`light` mode, after `coach enable`):
+
+> [API doc output in default markdown format]
+>
+> ---
+>
+> 💡 下次加一句输出格式说明会让结果更直接可用，比如：「输出 markdown 表格」「给编号列表」。
+
+One line, appended *after* the answer. User can ignore it and continue.
+
+### Example 2 — session pattern nudge
+
+After 3 vague requests in the same session (different wordings, same gap), on the 4th turn — **even if the 4th prompt itself is fine**:
+
+> [answer to current prompt]
+>
+> ---
+>
+> 📊 这个会话里最近几次你的请求里都没明确说要什么结果。下次开头固定一个意图动词（总结/批改/重写/评审），能少一两轮澄清。
+
+Fires at most **once per session per issue**. Not dependent on the 14-day observation period.
+
+### Example 3 — agent suppresses a rule false positive via context
+
+**User, turn N−1**: `please write the docs as markdown bullet points`
+**User, turn N**: `帮我写一个接口文档`
+
+The rule-based detector alone would flag turn N as `missing_output_contract` — but the agent saw turn N−1. Agent sends:
+
+```json
+{
+  "text": "帮我写一个接口文档",
+  "session_id": "conv-xyz",
+  "agent_classification": { "issue_type": null,
+    "evidence_summary": "prior turn already specified markdown bullets" }
+}
+```
+
+Coach returns `action: silent_rewrite`. No tip surfaces. Context wins.
+
+### Example 4 — `coach why-reminded`
+
+After a retrospective reminder lands, the user asks:
+
+```
+$ coach why-reminded
+上次提醒的原因：
+• 问题类型: missing_output_contract
+• 过去记录次数: 6 次，涉及 4 个会话
+• 其中造成明显成本的次数: 3 次
+• 上次提醒时间: never（冷却期 14 天）
+• 本次允许原因: evidence=6>=4, sessions=4>=3, cost=3>=2, cooldown=ok
+```
+
+If the chain can't be built (data missing / corrupt), the reminder wouldn't have fired in the first place.
+
 ## Quick start
 
 ```bash
