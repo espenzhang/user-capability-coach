@@ -4,6 +4,30 @@
 
 [中文版](README.zh-CN.md)
 
+## Why this project exists
+
+Today's AI assistants are **answer-friendly**: they work hard to guess what you meant even when you didn't say it clearly. That's great for the current task, but a pattern emerges across sessions:
+
+- The task gets done
+- The user asks the next question the same way
+- Clarification rounds, rework, and style mismatches keep recurring
+- The user's prompting skill doesn't actually grow — they just learn to tolerate the guesswork
+
+This project addresses a gap almost every AI tool leaves open: **the model keeps getting smarter at answering, but the user never gets better at asking.** `user-capability-coach` is a bet that the assistant should also, quietly, help the user grow — without ever interrupting the current task.
+
+The design deliberately avoids two anti-patterns:
+
+1. **Prompt police** — critiquing every message. Users turn it off within days.
+2. **Silent rewrite only** — the assistant fixes your intent internally and you never learn where the leverage is.
+
+The target user isn't a first-time prompter (they need more answers, not coaching). It's **people who use AI assistants heavily**, whose bottleneck is no longer "is the model smart enough" but "can I ask for what I want in fewer rounds, with less rework". The coach surfaces that leverage in a way that's brief, ignorable, and never judgmental — so the user can take it or leave it in under a second.
+
+**Success is not measured by "how many tips we showed"** but by three outcomes the plan explicitly tracks: first-turn hit rate goes up, repeat prompting gaps go down, and users still feel *helped* rather than *observed*.
+
+---
+
+## What the package actually is
+
 `user-capability-coach` is a two-skill package (`prompt-coach` + `growth-coach`) that helps users improve their prompting — **only after they explicitly turn it on**, in a way that's brief, ignorable, and never judgmental.
 
 It runs entirely on the user's machine. No network calls. No raw prompts stored. Zero output until the user runs `coach enable`.
