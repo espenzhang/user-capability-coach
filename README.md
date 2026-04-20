@@ -217,7 +217,7 @@ coach forget-pattern missing_output_contract [coding]
 # Nuclear option
 coach forget-all
 
-# Data export / import (round-trips between machines)
+# Data export / import (round-trips between machines, including reminder/history state)
 coach memory export > backup.jsonl
 coach memory import < backup.jsonl
 ```

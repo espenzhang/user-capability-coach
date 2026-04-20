@@ -350,6 +350,113 @@ class TestMemoryImportCLI:
         assert b_patterns["patterns"][0]["evidence_count"] == 3
         assert b_patterns["patterns"][0]["issue_type"] == "missing_output_contract"
 
+    def test_cross_profile_migration_preserves_status_counters(self, tmp_path):
+        prof_a = str(tmp_path / "profile_a_status")
+        prof_b = str(tmp_path / "profile_b_status")
+        Path(prof_a).mkdir()
+        Path(prof_b).mkdir()
+
+        run_coach("enable", profile=prof_a)
+        select_payload = json.dumps({
+            "text": "帮我写一个接口文档",
+            "session_id": "migrate-status",
+            "agent_classification": {
+                "issue_type": "missing_output_contract",
+                "confidence": 0.9,
+                "severity": 0.8,
+                "fixability": 0.9,
+                "cost_signal": "output_format_mismatch",
+                "domain": "coding",
+                "is_sensitive": False,
+                "is_urgent": False,
+                "evidence_summary": "request lacks output format",
+            },
+        })
+        selected = json.loads(run_coach("select-action", stdin_data=select_payload, profile=prof_a).stdout)
+        record_payload = json.dumps({
+            "session_id": "migrate-status",
+            "domain": selected["domain"],
+            "issue_type": selected["issue_type"],
+            "action_taken": selected["action"],
+            "severity": 0.8,
+            "confidence": 0.9,
+            "fixability": 0.9,
+            "cost_signal": "output_format_mismatch",
+            "evidence_summary": "request lacks output format",
+        })
+        run_coach("record-observation", stdin_data=record_payload, profile=prof_a)
+
+        status_a = run_coach("--lang", "en", "status", profile=prof_a).stdout
+        assert "Checks this week: 1" in status_a
+        assert "Visible coaching this week: 1" in status_a
+
+        exported = run_coach("memory", "export", profile=prof_a).stdout
+        run_coach("enable", profile=prof_b)
+        run_coach("memory", "import", stdin_data=exported, profile=prof_b)
+
+        status_b = run_coach("--lang", "en", "status", profile=prof_b).stdout
+        assert "Checks this week: 1" in status_b
+        assert "Visible coaching this week: 1" in status_b
+
+    def test_cross_profile_migration_preserves_why_reminded_history(self, tmp_path):
+        prof_a = str(tmp_path / "profile_a_why")
+        prof_b = str(tmp_path / "profile_b_why")
+        Path(prof_a).mkdir()
+        Path(prof_b).mkdir()
+
+        run_coach("enable", profile=prof_a)
+        run_coach("set-memory", "on", profile=prof_a)
+
+        for i in range(4):
+            payload = json.dumps({
+                "session_id": f"why_seed_{i}",
+                "domain": "coding",
+                "issue_type": "missing_output_contract",
+                "action_taken": "post_answer_tip",
+                "severity": 0.65,
+                "confidence": 0.80,
+                "cost_signal": "output_format_mismatch",
+                "evidence_summary": "coding task lacked output format",
+            })
+            run_coach("record-observation", stdin_data=payload, profile=prof_a)
+
+        cfg_path = Path(prof_a) / "config.json"
+        cfg = json.loads(cfg_path.read_text())
+        from datetime import datetime, timezone, timedelta
+        cfg["observation_period_ends_at"] = (
+            datetime.now(timezone.utc) - timedelta(days=15)
+        ).isoformat()
+        cfg_path.write_text(json.dumps(cfg))
+
+        selected = json.loads(run_coach(
+            "select-action",
+            stdin_data=json.dumps({"text": "Convert this JSON to CSV format", "session_id": "why-clean"}),
+            profile=prof_a,
+        ).stdout)
+        assert selected["action"] == "retrospective_reminder"
+
+        record_payload = json.dumps({
+            "session_id": "why-emit",
+            "domain": selected["domain"],
+            "issue_type": selected["issue_type"],
+            "action_taken": selected["action"],
+            "severity": 0.65,
+            "confidence": 0.80,
+            "evidence_summary": "retrospective reminder shown",
+        })
+        run_coach("record-observation", stdin_data=record_payload, profile=prof_a)
+
+        why_a = run_coach("why-reminded", profile=prof_a).stdout
+        assert "missing_output_contract" in why_a.lower() or "output" in why_a.lower()
+
+        exported = run_coach("memory", "export", profile=prof_a).stdout
+        run_coach("enable", profile=prof_b)
+        run_coach("set-memory", "on", profile=prof_b)
+        run_coach("memory", "import", stdin_data=exported, profile=prof_b)
+
+        why_b = run_coach("why-reminded", profile=prof_b).stdout
+        assert "missing_output_contract" in why_b.lower() or "output" in why_b.lower()
+
     def test_import_tolerates_bad_lines(self, profile):
         """Malformed JSON or rows missing required fields are skipped,
         good rows still import."""

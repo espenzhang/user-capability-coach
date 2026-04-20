@@ -37,8 +37,8 @@ class TestRecordObservation:
         assert obs_id is not None
         assert len(obs_id) > 0
 
-    def test_idempotent_same_session_same_issue(self, profile):
-        """Same session + issue_type should return same id."""
+    def test_idempotent_same_session_same_issue_same_domain(self, profile):
+        """Same session + issue_type + domain should return same id."""
         id1 = memory.record_observation(
             session_id="sess_idempotent",
             domain=Domain.CODING,
@@ -54,6 +54,37 @@ class TestRecordObservation:
             profile=profile,
         )
         assert id1 == id2
+
+    def test_same_session_same_issue_different_domain_creates_distinct_observations(self, profile):
+        id1 = memory.record_observation(
+            session_id="sess_cross_domain",
+            domain=Domain.CODING,
+            issue_type=IssueType.MISSING_OUTPUT_CONTRACT,
+            action_taken=Action.POST_ANSWER_TIP,
+            profile=profile,
+        )
+        id2 = memory.record_observation(
+            session_id="sess_cross_domain",
+            domain=Domain.WRITING,
+            issue_type=IssueType.MISSING_OUTPUT_CONTRACT,
+            action_taken=Action.POST_ANSWER_TIP,
+            profile=profile,
+        )
+
+        assert id1 != id2
+        patterns = memory.get_all_patterns(profile=profile)
+        domains = {
+            (p["issue_type"], p["domain"])
+            for p in patterns
+        }
+        assert (
+            IssueType.MISSING_OUTPUT_CONTRACT.value,
+            Domain.CODING.value,
+        ) in domains
+        assert (
+            IssueType.MISSING_OUTPUT_CONTRACT.value,
+            Domain.WRITING.value,
+        ) in domains
 
     def test_sensitive_domain_strips_content(self, profile):
         obs_id = memory.record_observation(
@@ -588,6 +619,46 @@ class TestExport:
         obj = json.loads(lines[0])
         assert "session_id" in obj
 
+    def test_export_jsonl_includes_state_tables(self, profile):
+        import json
+
+        memory.record_observation(
+            session_id="sess_export_state",
+            domain=Domain.CODING,
+            issue_type=IssueType.MISSING_GOAL,
+            action_taken=Action.POST_ANSWER_TIP,
+            profile=profile,
+        )
+        memory.record_intervention(
+            issue_type=IssueType.MISSING_GOAL,
+            surface="post_answer_tip",
+            shown=True,
+            profile=profile,
+        )
+        memory.record_decision(
+            action=Action.POST_ANSWER_TIP,
+            issue_type=IssueType.MISSING_GOAL,
+            mode="light",
+            domain=Domain.CODING,
+            detection_source="agent",
+            profile=profile,
+        )
+        memory.mark_session_nudged(
+            "sess_export_state",
+            IssueType.MISSING_GOAL,
+            profile=profile,
+        )
+
+        jsonl = memory.export_jsonl(profile=profile)
+        rows = [json.loads(line) for line in jsonl.strip().splitlines() if line.strip()]
+        row_types = {row.get("_type", "observation") for row in rows}
+        assert "observation" in row_types
+        assert "pattern" in row_types
+        assert "intervention_event" in row_types
+        assert "decision_event" in row_types
+        assert "session_turn" in row_types
+        assert "session_nudge_log" in row_types
+
 
 class TestReminderObservations:
     def test_reminder_actions_do_not_increase_pattern_evidence_or_session_turns(self, profile):
@@ -630,3 +701,43 @@ class TestReminderObservations:
         with sqlite3.connect(db) as con:
             turns = con.execute("SELECT COUNT(*) FROM session_turns").fetchone()[0]
         assert turns == 1
+
+    def test_startup_backfill_repairs_legacy_polluted_pattern_counts(self, profile):
+        import sqlite3
+
+        for i in range(4):
+            memory.record_observation(
+                session_id=f"legacy_real_{i}",
+                domain=Domain.CODING,
+                issue_type=IssueType.MISSING_OUTPUT_CONTRACT,
+                action_taken=Action.POST_ANSWER_TIP,
+                cost_signal=CostSignal.OUTPUT_FORMAT_MISMATCH,
+                profile=profile,
+            )
+
+        db = str(Path(profile) / "coach.db")
+        with sqlite3.connect(db) as con:
+            con.execute(
+                """UPDATE patterns
+                   SET evidence_count=6, distinct_sessions=6, cost_count=6,
+                       score=9.0, last_notified_at='2026-01-01T00:00:00+00:00'
+                   WHERE issue_type=? AND domain=?""",
+                (
+                    IssueType.MISSING_OUTPUT_CONTRACT.value,
+                    Domain.CODING.value,
+                ),
+            )
+            con.execute(
+                "UPDATE schema_meta SET value='1' WHERE key='version'",
+            )
+
+        memory._INITIALIZED_DBS.discard(db)
+        memory.init_db(profile=profile)
+
+        repaired = memory.get_top_pattern(profile=profile)
+        assert repaired is not None
+        assert repaired["evidence_count"] == 4
+        assert repaired["distinct_sessions"] == 4
+        assert repaired["cost_count"] == 4
+        assert repaired["score"] < 9.0
+        assert repaired["last_notified_at"] == "2026-01-01T00:00:00+00:00"

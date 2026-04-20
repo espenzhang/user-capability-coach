@@ -545,11 +545,13 @@ def cmd_memory_import(args: argparse.Namespace) -> None:
     """Import JSONL exported via `coach memory export`.
 
     Each line is either an observation row (has session_id, issue_type, ...)
-    or a pattern row (has "_type": "pattern"). Duplicates by id are skipped.
+    or a typed state row (`_type`: pattern / intervention_event /
+    decision_event / session_turn / session_nudge_log). Duplicates are skipped.
     """
     raw = sys.stdin.read()
     imported_obs = 0
     imported_patterns = 0
+    imported_state_rows = 0
     skipped = 0
     errors: list[str] = []
     if not raw.strip():
@@ -557,6 +559,7 @@ def cmd_memory_import(args: argparse.Namespace) -> None:
             "status": "ok",
             "imported_observations": 0,
             "imported_patterns": 0,
+            "imported_state_rows": 0,
             "skipped": 0,
             "errors": [],
         }))
@@ -572,10 +575,35 @@ def cmd_memory_import(args: argparse.Namespace) -> None:
             errors.append(f"line {lineno}: {e}")
             continue
 
-        if row.get("_type") == "pattern":
+        row_type = row.get("_type")
+        if row_type == "pattern":
             ok = memory.import_pattern_row(row, profile=args.profile)
             if ok:
                 imported_patterns += 1
+            else:
+                skipped += 1
+        elif row_type == "intervention_event":
+            ok = memory.import_intervention_row(row, profile=args.profile)
+            if ok:
+                imported_state_rows += 1
+            else:
+                skipped += 1
+        elif row_type == "decision_event":
+            ok = memory.import_decision_row(row, profile=args.profile)
+            if ok:
+                imported_state_rows += 1
+            else:
+                skipped += 1
+        elif row_type == "session_turn":
+            ok = memory.import_session_turn_row(row, profile=args.profile)
+            if ok:
+                imported_state_rows += 1
+            else:
+                skipped += 1
+        elif row_type == "session_nudge_log":
+            ok = memory.import_session_nudge_row(row, profile=args.profile)
+            if ok:
+                imported_state_rows += 1
             else:
                 skipped += 1
         else:
@@ -585,10 +613,14 @@ def cmd_memory_import(args: argparse.Namespace) -> None:
             else:
                 skipped += 1
 
+    if imported_obs or imported_patterns:
+        memory.repair_pattern_state(profile=args.profile)
+
     print(json.dumps({
         "status": "ok" if not errors else "partial",
         "imported_observations": imported_obs,
         "imported_patterns": imported_patterns,
+        "imported_state_rows": imported_state_rows,
         "skipped": skipped,
         "errors": errors,
     }))

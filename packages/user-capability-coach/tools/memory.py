@@ -1,7 +1,7 @@
 """SQLite-backed memory for observations, patterns, and intervention events.
 
 Design principles:
-  - Idempotent writes (same session + issue_type = upsert)
+  - Idempotent writes (same session + issue_type + domain = upsert)
   - No raw prompt text stored
   - Sensitive domain: only write domain=sensitive, shadow_only=1, no content
   - Pattern scoring: time-decayed, weekly * 0.85
@@ -37,7 +37,7 @@ SILENT_DECISION_ACTIONS = frozenset({
 })
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -160,6 +160,155 @@ def _db_path(platform: Platform | None = None, profile: str | None = None) -> Pa
 _INITIALIZED_DBS: set[str] = set()
 
 
+def _get_schema_version_locked(con: sqlite3.Connection) -> int:
+    row = con.execute(
+        "SELECT value FROM schema_meta WHERE key='version'"
+    ).fetchone()
+    if row is None:
+        return 0
+    try:
+        return int(row["value"])
+    except (TypeError, ValueError):
+        return 0
+
+
+def _set_schema_version_locked(con: sqlite3.Connection, version: int) -> None:
+    con.execute(
+        """INSERT INTO schema_meta (key, value) VALUES ('version', ?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+        (str(version),),
+    )
+
+
+def _replay_pattern_score(rows: list[sqlite3.Row]) -> float:
+    score = 0.0
+    last_seen: datetime | None = None
+    for row in rows:
+        ts = parse_iso_datetime_utc(row["ts"])
+        if ts is None:
+            continue
+        if last_seen is None:
+            score = 1.0
+        else:
+            weeks_elapsed = max(
+                0.0,
+                (ts - last_seen).total_seconds() / (7 * 86400),
+            )
+            score = score * (0.85 ** weeks_elapsed) + 1.0
+        last_seen = ts
+    return score
+
+
+def _apply_pattern_decay_locked(
+    con: sqlite3.Connection,
+    *,
+    now: datetime | None = None,
+) -> None:
+    now = now or datetime.now(timezone.utc)
+    rows = con.execute(
+        "SELECT issue_type, domain, score, last_seen_at FROM patterns"
+    ).fetchall()
+    for row in rows:
+        if not row["last_seen_at"]:
+            continue
+        last_seen = parse_iso_datetime_utc(row["last_seen_at"])
+        if last_seen is None:
+            continue
+        weeks = max(
+            0.0,
+            (now - last_seen).total_seconds() / (7 * 86400),
+        )
+        decayed = row["score"] * (0.85 ** weeks)
+        days_since = (now - last_seen).days
+        if days_since >= 90:
+            status = PatternStatus.ARCHIVED.value
+        elif days_since >= 60:
+            status = PatternStatus.RESOLVED.value
+        elif days_since >= 30 or decayed < 0.5:
+            status = PatternStatus.COOLING.value
+        else:
+            status = PatternStatus.ACTIVE.value
+        resolved_at = row["last_seen_at"] if status in (
+            PatternStatus.RESOLVED.value,
+            PatternStatus.ARCHIVED.value,
+        ) else None
+        con.execute(
+            """UPDATE patterns
+               SET score=?, status=?, resolved_at=?
+               WHERE issue_type=? AND domain=?""",
+            (
+                decayed,
+                status,
+                resolved_at,
+                row["issue_type"],
+                row["domain"],
+            ),
+        )
+
+
+def _rebuild_pattern_state_locked(con: sqlite3.Connection) -> None:
+    existing_rows = con.execute(
+        "SELECT issue_type, domain, micro_habit, last_notified_at FROM patterns"
+    ).fetchall()
+    existing_meta = {
+        (row["issue_type"], row["domain"]): {
+            "micro_habit": row["micro_habit"],
+            "last_notified_at": row["last_notified_at"],
+        }
+        for row in existing_rows
+    }
+
+    evidence_rows = con.execute(
+        "SELECT issue_type, domain, session_id, ts, cost_signal "
+        "FROM observations "
+        "WHERE issue_type IS NOT NULL AND shadow_only=0 "
+        "AND action_taken NOT IN (?, ?) "
+        "ORDER BY issue_type, domain, ts",
+        tuple(NON_EVIDENCE_ACTIONS),
+    ).fetchall()
+
+    grouped: dict[tuple[str, str], list[sqlite3.Row]] = {}
+    for row in evidence_rows:
+        grouped.setdefault((row["issue_type"], row["domain"]), []).append(row)
+
+    con.execute("DELETE FROM patterns")
+    for (issue_type, domain), rows in grouped.items():
+        sessions = {row["session_id"] for row in rows}
+        cost_count = sum(
+            1 for row in rows
+            if row["cost_signal"] and row["cost_signal"] != CostSignal.NONE.value
+        )
+        meta = existing_meta.get((issue_type, domain), {})
+        con.execute(
+            """INSERT INTO patterns
+               (issue_type, domain, score, evidence_count, distinct_sessions,
+                cost_count, status, micro_habit, last_seen_at, last_notified_at, resolved_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                issue_type,
+                domain,
+                _replay_pattern_score(rows),
+                len(rows),
+                len(sessions),
+                cost_count,
+                PatternStatus.ACTIVE.value,
+                meta.get("micro_habit"),
+                rows[-1]["ts"],
+                meta.get("last_notified_at"),
+                None,
+            ),
+        )
+
+    _apply_pattern_decay_locked(con)
+
+
+def _maybe_upgrade_db_locked(con: sqlite3.Connection) -> None:
+    version = _get_schema_version_locked(con)
+    if version < 2:
+        _rebuild_pattern_state_locked(con)
+    _set_schema_version_locked(con, SCHEMA_VERSION)
+
+
 @contextmanager
 def _conn(
     platform: Platform | None = None,
@@ -174,8 +323,10 @@ def _conn(
     path_key = str(path)
     if path_key not in _INITIALIZED_DBS:
         con_init = sqlite3.connect(path_key)
+        con_init.row_factory = sqlite3.Row
         try:
             con_init.executescript(SCHEMA_SQL)
+            _maybe_upgrade_db_locked(con_init)
             con_init.commit()
         finally:
             con_init.close()
@@ -272,8 +423,8 @@ def record_observation(
         # Idempotent: if same session+issue_type already recorded, skip
         if issue_type is not None:
             existing = con.execute(
-                "SELECT id FROM observations WHERE session_id=? AND issue_type=?",
-                (session_id, issue_type.value),
+                "SELECT id FROM observations WHERE session_id=? AND issue_type=? AND domain=?",
+                (session_id, issue_type.value, domain.value),
             ).fetchone()
             if existing:
                 return existing["id"]
@@ -356,8 +507,9 @@ def _update_pattern(
             # by counting sessions with an earlier ID or comparing against stored count
             prior_sessions = con.execute(
                 "SELECT COUNT(DISTINCT session_id) as c FROM observations "
-                "WHERE issue_type=? AND domain=? AND session_id != ?",
-                (issue_type.value, domain.value, session_id),
+                "WHERE issue_type=? AND domain=? AND session_id != ? "
+                "AND shadow_only=0 AND action_taken NOT IN (?, ?)",
+                (issue_type.value, domain.value, session_id, *NON_EVIDENCE_ACTIONS),
             ).fetchone()["c"]
             stored_distinct = row["distinct_sessions"]
             is_new_session = prior_sessions >= stored_distinct
@@ -418,8 +570,10 @@ def _get_distinct_sessions(
 ) -> set[str]:
     with _conn(platform, profile) as con:
         rows = con.execute(
-            "SELECT DISTINCT session_id FROM observations WHERE issue_type=? AND domain=?",
-            (issue_type.value, domain.value),
+            "SELECT DISTINCT session_id FROM observations "
+            "WHERE issue_type=? AND domain=? "
+            "AND shadow_only=0 AND action_taken NOT IN (?, ?)",
+            (issue_type.value, domain.value, *NON_EVIDENCE_ACTIONS),
         ).fetchall()
     return {r["session_id"] for r in rows}
 
@@ -434,42 +588,8 @@ def apply_weekly_decay(platform: Platform | None = None, profile: str | None = N
     prune_old_session_turns(platform=platform, profile=profile)
     prune_old_observations(platform=platform, profile=profile)
 
-    now = datetime.now(timezone.utc)
     with _conn(platform, profile, immediate=True) as con:
-        rows = con.execute(
-            "SELECT issue_type, domain, score, last_seen_at FROM patterns WHERE status != 'archived'"
-        ).fetchall()
-        for row in rows:
-            if not row["last_seen_at"]:
-                continue
-            last_seen = parse_iso_datetime_utc(row["last_seen_at"])
-            if last_seen is None:
-                continue
-            weeks = max(
-                0.0,
-                (now - last_seen).total_seconds() / (7 * 86400),
-            )
-            decayed = row["score"] * (0.85 ** weeks)
-
-            # Determine status transitions
-            days_since = (now - last_seen).days
-            if days_since >= 90:
-                status = PatternStatus.ARCHIVED.value
-            elif days_since >= 60:
-                status = PatternStatus.RESOLVED.value
-            elif days_since >= 30 or decayed < 0.5:
-                status = PatternStatus.COOLING.value
-            else:
-                status = PatternStatus.ACTIVE.value
-
-            resolved_at = row["last_seen_at"] if status in (
-                PatternStatus.RESOLVED.value, PatternStatus.ARCHIVED.value
-            ) else None
-
-            con.execute(
-                "UPDATE patterns SET score=?, status=?, resolved_at=? WHERE issue_type=? AND domain=?",
-                (decayed, status, resolved_at, row["issue_type"], row["domain"]),
-            )
+        _apply_pattern_decay_locked(con)
 
 
 def get_top_pattern(
@@ -844,7 +964,7 @@ def export_jsonl(
     platform: Platform | None = None,
     profile: str | None = None,
 ) -> str:
-    """Export all observations and patterns as JSONL string."""
+    """Export observations, patterns, and state tables as JSONL string."""
     import io
     buf = io.StringIO()
     with _conn(platform, profile) as con:
@@ -852,6 +972,14 @@ def export_jsonl(
             buf.write(json.dumps(dict(row)) + "\n")
         for row in con.execute("SELECT * FROM patterns"):
             buf.write(json.dumps({"_type": "pattern", **dict(row)}) + "\n")
+        for row in con.execute("SELECT * FROM intervention_events"):
+            buf.write(json.dumps({"_type": "intervention_event", **dict(row)}) + "\n")
+        for row in con.execute("SELECT * FROM decision_events"):
+            buf.write(json.dumps({"_type": "decision_event", **dict(row)}) + "\n")
+        for row in con.execute("SELECT * FROM session_turns"):
+            buf.write(json.dumps({"_type": "session_turn", **dict(row)}) + "\n")
+        for row in con.execute("SELECT * FROM session_nudge_log"):
+            buf.write(json.dumps({"_type": "session_nudge_log", **dict(row)}) + "\n")
     return buf.getvalue()
 
 
@@ -864,6 +992,22 @@ _PATTERN_COLUMNS = (
     "issue_type", "domain", "score", "evidence_count", "distinct_sessions",
     "cost_count", "status", "micro_habit", "last_seen_at", "last_notified_at",
     "resolved_at",
+)
+_INTERVENTION_COLUMNS = (
+    "id", "ts", "issue_type", "surface", "shown", "suppressed_reason",
+    "accepted", "dismissed", "ignored", "followup_improvement_detected",
+    "explanation_chain",
+)
+_DECISION_COLUMNS = (
+    "id", "ts", "action", "issue_type", "mode", "domain",
+    "detection_source", "suppressed_reason",
+)
+_SESSION_TURN_COLUMNS = (
+    "id", "session_id", "ts", "turn_index", "issue_type",
+    "domain", "severity", "confidence", "shadow_only",
+)
+_SESSION_NUDGE_COLUMNS = (
+    "session_id", "issue_type", "ts",
 )
 
 
@@ -902,6 +1046,128 @@ def import_observation_row(
         except sqlite3.IntegrityError:
             return False
     return True
+
+
+def import_intervention_row(
+    row: dict[str, Any],
+    platform: Platform | None = None,
+    profile: str | None = None,
+) -> bool:
+    init_db(platform, profile)
+    row = dict(row)
+    row.setdefault("id", str(uuid.uuid4()))
+    row.setdefault("ts", datetime.now(timezone.utc).isoformat())
+    values = tuple(row.get(c) for c in _INTERVENTION_COLUMNS)
+    with _conn(platform, profile) as con:
+        existing = con.execute(
+            "SELECT id FROM intervention_events WHERE id=?",
+            (row["id"],),
+        ).fetchone()
+        if existing:
+            return False
+        placeholders = ",".join(["?"] * len(_INTERVENTION_COLUMNS))
+        con.execute(
+            f"INSERT INTO intervention_events ({','.join(_INTERVENTION_COLUMNS)}) "
+            f"VALUES ({placeholders})",
+            values,
+        )
+    return True
+
+
+def import_decision_row(
+    row: dict[str, Any],
+    platform: Platform | None = None,
+    profile: str | None = None,
+) -> bool:
+    init_db(platform, profile)
+    row = dict(row)
+    row.setdefault("id", str(uuid.uuid4()))
+    row.setdefault("ts", datetime.now(timezone.utc).isoformat())
+    row.setdefault("mode", "light")
+    row.setdefault("domain", Domain.OTHER.value)
+    row.setdefault("detection_source", "rules")
+    if not row.get("action"):
+        return False
+    values = tuple(row.get(c) for c in _DECISION_COLUMNS)
+    with _conn(platform, profile) as con:
+        existing = con.execute(
+            "SELECT id FROM decision_events WHERE id=?",
+            (row["id"],),
+        ).fetchone()
+        if existing:
+            return False
+        placeholders = ",".join(["?"] * len(_DECISION_COLUMNS))
+        con.execute(
+            f"INSERT INTO decision_events ({','.join(_DECISION_COLUMNS)}) "
+            f"VALUES ({placeholders})",
+            values,
+        )
+    return True
+
+
+def import_session_turn_row(
+    row: dict[str, Any],
+    platform: Platform | None = None,
+    profile: str | None = None,
+) -> bool:
+    init_db(platform, profile)
+    row = dict(row)
+    row.setdefault("id", str(uuid.uuid4()))
+    row.setdefault("ts", datetime.now(timezone.utc).isoformat())
+    row.setdefault("shadow_only", 0)
+    if not row.get("session_id"):
+        return False
+    values = tuple(row.get(c) for c in _SESSION_TURN_COLUMNS)
+    with _conn(platform, profile) as con:
+        existing = con.execute(
+            "SELECT id FROM session_turns WHERE id=?",
+            (row["id"],),
+        ).fetchone()
+        if existing:
+            return False
+        placeholders = ",".join(["?"] * len(_SESSION_TURN_COLUMNS))
+        con.execute(
+            f"INSERT INTO session_turns ({','.join(_SESSION_TURN_COLUMNS)}) "
+            f"VALUES ({placeholders})",
+            values,
+        )
+    return True
+
+
+def import_session_nudge_row(
+    row: dict[str, Any],
+    platform: Platform | None = None,
+    profile: str | None = None,
+) -> bool:
+    init_db(platform, profile)
+    row = dict(row)
+    row.setdefault("ts", datetime.now(timezone.utc).isoformat())
+    if not row.get("session_id") or not row.get("issue_type"):
+        return False
+    values = tuple(row.get(c) for c in _SESSION_NUDGE_COLUMNS)
+    with _conn(platform, profile) as con:
+        existing = con.execute(
+            "SELECT 1 FROM session_nudge_log WHERE session_id=? AND issue_type=?",
+            (row["session_id"], row["issue_type"]),
+        ).fetchone()
+        if existing:
+            return False
+        placeholders = ",".join(["?"] * len(_SESSION_NUDGE_COLUMNS))
+        con.execute(
+            f"INSERT INTO session_nudge_log ({','.join(_SESSION_NUDGE_COLUMNS)}) "
+            f"VALUES ({placeholders})",
+            values,
+        )
+    return True
+
+
+def repair_pattern_state(
+    platform: Platform | None = None,
+    profile: str | None = None,
+) -> None:
+    with _conn(platform, profile, immediate=True) as con:
+        _rebuild_pattern_state_locked(con)
+        _set_schema_version_locked(con, SCHEMA_VERSION)
 
 
 # ── Session-level short-term memory ───────────────────────────────────────
