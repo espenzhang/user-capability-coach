@@ -159,8 +159,9 @@ coach --lang en enable           # Force English output
 
 # Installation
 coach install --platform claude-code
-coach install --platform codex
-coach install --all
+coach install --platform codex   # Project-local Codex install
+# For global Codex install:
+#   COACH_CODEX_SCOPE=global bash adapters/codex/install.sh
 coach uninstall --platform claude-code
 ```
 

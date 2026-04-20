@@ -7,6 +7,7 @@ that mode=off suppresses everything, and that the main commands return
 well-formed JSON.
 """
 import json
+import os
 import subprocess
 import sys
 import pytest
@@ -15,6 +16,8 @@ from pathlib import Path
 
 PACKAGE_DIR = Path(__file__).parent.parent
 CLI = str(PACKAGE_DIR / "tools" / "cli.py")
+CODEX_INSTALL = str(PACKAGE_DIR / "adapters" / "codex" / "install.sh")
+CODEX_UNINSTALL = str(PACKAGE_DIR / "adapters" / "codex" / "uninstall.sh")
 
 
 def run_coach(*args, stdin_data: str | None = None, profile: str | None = None) -> subprocess.CompletedProcess:
@@ -27,6 +30,51 @@ def run_coach(*args, stdin_data: str | None = None, profile: str | None = None) 
         input=stdin_data,
         capture_output=True,
         text=True,
+    )
+
+
+def run_codex_install(
+    tmp_path: Path,
+    *,
+    scope: str,
+    project_root: Path | None = None,
+) -> tuple[subprocess.CompletedProcess, dict[str, str]]:
+    home = tmp_path / "home"
+    codex_home = tmp_path / "codex-home"
+    xdg_home = tmp_path / "xdg-data"
+    (home / ".local" / "bin").mkdir(parents=True, exist_ok=True)
+    codex_home.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env.update({
+        "HOME": str(home),
+        "CODEX_HOME": str(codex_home),
+        "XDG_DATA_HOME": str(xdg_home),
+        "COACH_CODEX_SCOPE": scope,
+    })
+    if project_root is not None:
+        env["COACH_PROJECT_ROOT"] = str(project_root)
+    result = subprocess.run(
+        ["bash", CODEX_INSTALL],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(PACKAGE_DIR),
+    )
+    return result, env
+
+
+def run_codex_uninstall(
+    *,
+    env: dict[str, str],
+    input_text: str = "n\n",
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", CODEX_UNINSTALL],
+        input=input_text,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(PACKAGE_DIR),
     )
 
 
@@ -239,6 +287,67 @@ class TestStatusCLI:
         assert "checks this week: 2" in out
         assert "visible coaching this week: 1" in out
         assert "silent decisions this week: 1" in out
+
+
+class TestCodexInstallScripts:
+    def test_project_install_creates_wrapper_and_unambiguous_agents_command(self, tmp_path):
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+
+        result, env = run_codex_install(tmp_path, scope="project", project_root=project_root)
+
+        assert result.returncode == 0, result.stderr
+        wrapper = project_root / ".agents" / "skills" / "user-capability-coach" / "coach"
+        agents_md = project_root / "AGENTS.md"
+        assert wrapper.exists()
+        assert ".agents/skills/user-capability-coach/coach enable" in agents_md.read_text()
+        assert "run `coach enable`" not in agents_md.read_text()
+
+        status = subprocess.run(
+            [str(wrapper), "status"],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(project_root),
+        )
+        assert status.returncode == 0, status.stderr
+        assert "off" in status.stdout.lower()
+
+    def test_global_install_targets_codex_home_and_uses_global_wrapper(self, tmp_path):
+        result, env = run_codex_install(tmp_path, scope="global")
+
+        assert result.returncode == 0, result.stderr
+        codex_home = Path(env["CODEX_HOME"])
+        wrapper = codex_home / "skills" / "user-capability-coach" / "coach"
+        agents_md = codex_home / "AGENTS.md"
+        assert (codex_home / "skills" / "prompt-coach" / "SKILL.md").exists()
+        assert (codex_home / "skills" / "growth-coach" / "SKILL.md").exists()
+        assert wrapper.exists()
+        content = agents_md.read_text()
+        assert f"run `{wrapper} enable`" in content
+        assert "run `coach enable`" not in content
+
+        status = subprocess.run(
+            [str(wrapper), "status"],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(codex_home),
+        )
+        assert status.returncode == 0, status.stderr
+        assert "off" in status.stdout.lower()
+
+    def test_global_uninstall_removes_codex_home_snippet(self, tmp_path):
+        install_result, env = run_codex_install(tmp_path, scope="global")
+        assert install_result.returncode == 0, install_result.stderr
+
+        result = run_codex_uninstall(env=env)
+
+        assert result.returncode == 0, result.stderr
+        codex_home = Path(env["CODEX_HOME"])
+        agents_md = codex_home / "AGENTS.md"
+        assert "<!-- user-capability-coach:start -->" not in agents_md.read_text()
+        assert not (codex_home / "skills" / "user-capability-coach").exists()
 
 
 class TestMemoryExportCLI:

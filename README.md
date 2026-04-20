@@ -113,11 +113,19 @@ export COACH_PROJECT_ROOT=/path/to/your/project
 bash adapters/codex/install.sh
 ```
 
+**For Codex (global shared install across all repos):**
+```bash
+export COACH_CODEX_SCOPE=global
+bash adapters/codex/install.sh
+```
+
 **After install, coaching is OFF.** To enable:
 ```
 /coach on          # in Claude Code
-# or
-coach enable       # in any shell
+# or, project-local Codex
+.agents/skills/user-capability-coach/coach enable
+# or, global Codex
+~/.codex/skills/user-capability-coach/coach enable
 ```
 
 ## What the user actually sees

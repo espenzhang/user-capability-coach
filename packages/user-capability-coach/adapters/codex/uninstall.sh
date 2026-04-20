@@ -2,13 +2,29 @@
 # Uninstall User Capability Coach from Codex
 set -euo pipefail
 
-PROJECT_ROOT="${COACH_PROJECT_ROOT:-$PWD}"
-SKILLS_DEST="$PROJECT_ROOT/.agents/skills"
+SCOPE="${COACH_CODEX_SCOPE:-project}"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/user-capability-coach"
-AGENTS_MD="$PROJECT_ROOT/AGENTS.md"
 MARKER_START="<!-- user-capability-coach:start -->"
 
-echo "Uninstalling User Capability Coach from $PROJECT_ROOT..."
+case "$SCOPE" in
+    project)
+        PROJECT_ROOT="${COACH_PROJECT_ROOT:-$PWD}"
+        SKILLS_DEST="$PROJECT_ROOT/.agents/skills"
+        AGENTS_MD="$PROJECT_ROOT/AGENTS.md"
+        echo "Uninstalling User Capability Coach from project: $PROJECT_ROOT..."
+        ;;
+    global)
+        CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
+        SKILLS_DEST="$CODEX_HOME_DIR/skills"
+        AGENTS_MD="$CODEX_HOME_DIR/AGENTS.md"
+        echo "Uninstalling User Capability Coach from global Codex home: $CODEX_HOME_DIR..."
+        ;;
+    *)
+        echo "Unsupported COACH_CODEX_SCOPE: $SCOPE" >&2
+        echo "Expected one of: project, global" >&2
+        exit 1
+        ;;
+esac
 
 # 1. Remove skill directories
 for skill in prompt-coach growth-coach user-capability-coach; do

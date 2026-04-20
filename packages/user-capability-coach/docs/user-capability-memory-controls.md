@@ -64,8 +64,7 @@ All deletions are permanent and immediate.
 | Platform | Path |
 |----------|------|
 | Claude Code | `~/.claude/user-capability-coach/coach.db` |
-| Codex / generic | `~/.local/share/user-capability-coach/coach.db` |
-| macOS (Codex) | `~/Library/Application Support/user-capability-coach/coach.db` |
+| Codex / generic | `$XDG_DATA_HOME/user-capability-coach/coach.db` or `~/.local/share/user-capability-coach/coach.db` |
 
 Data is stored locally on your machine only. It is not synced, not sent to any server, and not included in git repositories.
 
