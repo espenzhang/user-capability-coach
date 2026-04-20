@@ -93,6 +93,7 @@ def cmd_status(args: argparse.Namespace) -> None:
     cfg = settings.load(profile=args.profile)
     p = settings.observation_period_ends_at(profile=args.profile)
     period_str = p.strftime("%Y-%m-%d") if p else None
+    decision_counts = memory.get_decision_counts_7d(profile=args.profile)
     count_pro = memory.get_proactive_count_7d(profile=args.profile)
     count_ret = memory.get_retrospective_count_7d(profile=args.profile)
 
@@ -110,6 +111,9 @@ def cmd_status(args: argparse.Namespace) -> None:
         mode=cfg["mode"],
         memory_enabled=cfg["memory_enabled"],
         observation_ends=period_str,
+        checked_7d=decision_counts["checked"],
+        surfaced_7d=decision_counts["surfaced"],
+        silent_7d=decision_counts["silent"],
         proactive_7d=count_pro,
         retro_7d=count_ret,
         prompt_text=_lang_marker(args),
@@ -164,20 +168,6 @@ def cmd_record_observation(args: argparse.Namespace) -> None:
         print(json.dumps({"status": "error", "reason": str(e)}))
         sys.exit(1)
 
-    # memory_enabled=false → don't persist observations. Emit a single
-    # suppressed intervention_event (content-free) so aggregate stats still
-    # reflect that coaching was active, but nothing about the user is stored.
-    if not cfg["memory_enabled"]:
-        memory.record_intervention(
-            issue_type=None,
-            surface=action.value if action else "none",
-            shown=False,
-            suppressed_reason="memory_disabled",
-            profile=args.profile,
-        )
-        print(json.dumps({"status": "skipped", "reason": "memory_disabled"}))
-        return
-
     session_id = data.get("session_id")
     if not session_id:
         # Generate a per-process fallback so distinct_sessions isn't inflated
@@ -190,6 +180,42 @@ def cmd_record_observation(args: argparse.Namespace) -> None:
             f"one-shot id ({session_id}). Agents should pass a stable "
             "per-conversation session_id.\n"
         )
+
+    # memory_enabled=false → don't persist observations. Emit a single
+    # short-term session turn so session nudges still work, but do not write
+    # longitudinal observations/patterns.
+    if not cfg["memory_enabled"]:
+        if action not in (Action.RETROSPECTIVE_REMINDER, Action.SESSION_PATTERN_NUDGE):
+            memory.record_session_turn(
+                session_id=session_id,
+                issue_type=issue_type,
+                domain=domain,
+                severity=data.get("severity", 0.0),
+                confidence=data.get("confidence", 0.0),
+                shadow_only=data.get("shadow_only", False),
+                profile=args.profile,
+            )
+        if action in (Action.POST_ANSWER_TIP, Action.PRE_ANSWER_MICRO_NUDGE):
+            memory.record_intervention(
+                issue_type=issue_type,
+                surface=action.value,
+                shown=True,
+                profile=args.profile,
+            )
+        elif action == Action.SESSION_PATTERN_NUDGE and issue_type is not None:
+            memory.record_intervention(
+                issue_type=issue_type,
+                surface=action.value,
+                shown=True,
+                profile=args.profile,
+            )
+            memory.mark_session_nudged(
+                session_id=session_id,
+                issue_type=issue_type,
+                profile=args.profile,
+            )
+        print(json.dumps({"status": "skipped", "reason": "memory_disabled"}))
+        return
 
     obs_id = memory.record_observation(
         session_id=session_id,
@@ -343,17 +369,19 @@ def cmd_select_action(args: argparse.Namespace) -> None:
         except (ValueError, KeyError):
             pass
 
-    # Short-term session pattern: only relevant when memory is on AND the
-    # caller supplied a session_id so we can look up this session's turns.
+    # Short-term session pattern: driven by recent session_turns and only
+    # needs a session_id so we can inspect the current conversation.
     session_pat: SessionPatternSummary | None = None
     session_already_nudged = False
-    if cfg["memory_enabled"] and session_id:
+    if session_id:
         raw_pat = memory.get_session_pattern(session_id, profile=args.profile)
         if raw_pat:
             try:
                 sp_issue = IssueType(raw_pat["issue_type"])
+                sp_domain = Domain(raw_pat["domain"])
                 session_pat = SessionPatternSummary(
                     issue_type=sp_issue,
+                    domain=sp_domain,
                     count=raw_pat["count"],
                     window_size=raw_pat["window_size"],
                 )
@@ -393,17 +421,34 @@ def cmd_select_action(args: argparse.Namespace) -> None:
     elif result.action == Action.SESSION_PATTERN_NUDGE and result.issue_type:
         coaching_text = templates.session_pattern_nudge(result.issue_type, prompt_text)
 
+    out_domain = (
+        top_pat_raw["domain"]
+        if result.action == Action.RETROSPECTIVE_REMINDER and top_pat_raw is not None
+        else (
+            session_pat.domain.value
+            if result.action == Action.SESSION_PATTERN_NUDGE and session_pat is not None
+            else detection.domain.value
+        )
+    )
+
+    if mode != CoachMode.OFF:
+        memory.record_decision(
+            action=result.action,
+            issue_type=result.issue_type,
+            mode=mode.value,
+            domain=Domain(out_domain),
+            detection_source=detection_source,
+            suppressed_reason=result.suppressed_reason,
+            profile=args.profile,
+        )
+
     out = {
         "action": result.action.value,
         "issue_type": result.issue_type.value if result.issue_type else None,
         "reason": result.reason,
         "suppressed_reason": result.suppressed_reason,
         "coaching_text": coaching_text,
-        "domain": (
-            top_pat_raw["domain"]
-            if result.action == Action.RETROSPECTIVE_REMINDER and top_pat_raw is not None
-            else detection.domain.value
-        ),
+        "domain": out_domain,
         "is_sensitive": detection.is_sensitive,
         "detection_source": detection_source,  # "agent" | "rules"
     }

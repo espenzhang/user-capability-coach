@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Tests for policy.py — action selection logic."""
 import pytest
 import sys
@@ -446,16 +448,15 @@ class TestSessionPatternNudge:
         assert result.action == Action.POST_ANSWER_TIP
         assert result.issue_type == IssueType.MISSING_OUTPUT_CONTRACT
 
-    def test_requires_memory_enabled(self):
-        """Session nudge requires memory_enabled (session_turns is memory data)."""
+    def test_does_not_require_long_term_memory(self):
+        """Session nudges should still work when only short-term session data exists."""
         inp = _make_input(
             "Convert this JSON to CSV format",
             session_pattern=self._sp(),
         )
-        # Flip memory off on the input
         inp.memory_enabled = False
         result = select_action(inp)
-        assert result.action == Action.SILENT_REWRITE
+        assert result.action == Action.SESSION_PATTERN_NUDGE
 
     def test_urgency_blocks_session_nudge(self):
         """Urgent context should not get session-level reminder interrupts."""

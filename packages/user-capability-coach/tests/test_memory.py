@@ -441,6 +441,36 @@ class TestForget:
         patterns = memory.get_all_patterns(profile=profile)
         assert all(p["issue_type"] != IssueType.MISSING_OUTPUT_CONTRACT.value for p in patterns)
 
+    def test_forget_pattern_clears_short_term_rows(self, profile):
+        memory.record_observation(
+            session_id="short_term_forget",
+            domain=Domain.CODING,
+            issue_type=IssueType.MISSING_OUTPUT_CONTRACT,
+            action_taken=Action.POST_ANSWER_TIP,
+            profile=profile,
+        )
+        memory.mark_session_nudged(
+            "short_term_forget",
+            IssueType.MISSING_OUTPUT_CONTRACT,
+            profile=profile,
+        )
+
+        memory.forget_pattern(IssueType.MISSING_OUTPUT_CONTRACT, profile=profile)
+
+        import sqlite3
+        db = str(Path(profile) / "coach.db")
+        with sqlite3.connect(db) as con:
+            turn_count = con.execute(
+                "SELECT COUNT(*) FROM session_turns WHERE issue_type=?",
+                (IssueType.MISSING_OUTPUT_CONTRACT.value,),
+            ).fetchone()[0]
+            nudge_count = con.execute(
+                "SELECT COUNT(*) FROM session_nudge_log WHERE issue_type=?",
+                (IssueType.MISSING_OUTPUT_CONTRACT.value,),
+            ).fetchone()[0]
+        assert turn_count == 0
+        assert nudge_count == 0
+
     def test_forget_all_clears_everything(self, profile):
         for issue in [IssueType.MISSING_GOAL, IssueType.OVERLOADED_REQUEST]:
             memory.record_observation(
@@ -484,6 +514,38 @@ class TestInterventionEvents:
         assert result is None
 
 
+class TestDecisionEvents:
+    def test_decision_counts_include_checked_surfaced_and_silent(self, profile):
+        memory.record_decision(
+            action=Action.POST_ANSWER_TIP,
+            issue_type=IssueType.MISSING_OUTPUT_CONTRACT,
+            mode="strict",
+            domain=Domain.CODING,
+            detection_source="agent",
+            profile=profile,
+        )
+        memory.record_decision(
+            action=Action.SESSION_PATTERN_NUDGE,
+            issue_type=IssueType.MISSING_GOAL,
+            mode="light",
+            domain=Domain.WRITING,
+            detection_source="rules",
+            profile=profile,
+        )
+        memory.record_decision(
+            action=Action.SILENT_REWRITE,
+            issue_type=None,
+            mode="light",
+            domain=Domain.CODING,
+            detection_source="agent",
+            suppressed_reason="budget_exhausted",
+            profile=profile,
+        )
+
+        counts = memory.get_decision_counts_7d(profile=profile)
+        assert counts == {"checked": 3, "surfaced": 2, "silent": 1}
+
+
 # ── Proactive/retrospective counts ────────────────────────────────────────
 
 class TestCounts:
@@ -525,3 +587,46 @@ class TestExport:
         assert len(lines) >= 1
         obj = json.loads(lines[0])
         assert "session_id" in obj
+
+
+class TestReminderObservations:
+    def test_reminder_actions_do_not_increase_pattern_evidence_or_session_turns(self, profile):
+        memory.record_observation(
+            session_id="seed_sess",
+            domain=Domain.CODING,
+            issue_type=IssueType.MISSING_OUTPUT_CONTRACT,
+            action_taken=Action.POST_ANSWER_TIP,
+            cost_signal=CostSignal.OUTPUT_FORMAT_MISMATCH,
+            profile=profile,
+        )
+
+        before = memory.get_top_pattern(profile=profile)
+        assert before is not None
+        assert before["evidence_count"] == 1
+
+        memory.record_observation(
+            session_id="retro_notice",
+            domain=Domain.CODING,
+            issue_type=IssueType.MISSING_OUTPUT_CONTRACT,
+            action_taken=Action.RETROSPECTIVE_REMINDER,
+            evidence_summary="coach surfaced retrospective reminder",
+            profile=profile,
+        )
+        memory.record_observation(
+            session_id="session_notice",
+            domain=Domain.CODING,
+            issue_type=IssueType.MISSING_OUTPUT_CONTRACT,
+            action_taken=Action.SESSION_PATTERN_NUDGE,
+            evidence_summary="coach surfaced session reminder",
+            profile=profile,
+        )
+
+        after = memory.get_top_pattern(profile=profile)
+        assert after is not None
+        assert after["evidence_count"] == 1
+
+        import sqlite3
+        db = str(Path(profile) / "coach.db")
+        with sqlite3.connect(db) as con:
+            turns = con.execute("SELECT COUNT(*) FROM session_turns").fetchone()[0]
+        assert turns == 1

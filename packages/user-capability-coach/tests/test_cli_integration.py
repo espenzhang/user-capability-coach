@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """CLI integration tests — run the actual coach CLI as a subprocess.
 
 These tests verify that the CLI's stdin/stdout contract works correctly,
@@ -198,6 +200,45 @@ class TestStatusCLI:
         result = run_coach("status", profile=profile)
         assert result.returncode == 0
         assert "off" in result.stdout.lower()
+
+    def test_status_shows_checked_surfaced_and_silent_counts(self, profile):
+        run_coach("enable", profile=profile)
+
+        surfaced = json.dumps({
+            "text": "帮我写一个接口文档",
+            "session_id": "status-visible",
+            "agent_classification": {
+                "issue_type": "missing_output_contract",
+                "confidence": 0.9,
+                "severity": 0.8,
+                "fixability": 0.9,
+                "cost_signal": "output_format_mismatch",
+                "domain": "coding",
+                "is_sensitive": False,
+                "is_urgent": False,
+                "evidence_summary": "request lacks output format",
+            },
+        })
+        run_coach("select-action", stdin_data=surfaced, profile=profile)
+
+        silent = json.dumps({
+            "text": "Convert this JSON to CSV format",
+            "session_id": "status-silent",
+            "agent_classification": {
+                "issue_type": None,
+                "domain": "coding",
+                "is_sensitive": False,
+                "is_urgent": False,
+            },
+        })
+        run_coach("select-action", stdin_data=silent, profile=profile)
+
+        result = run_coach("--lang", "en", "status", profile=profile)
+        assert result.returncode == 0
+        out = result.stdout.lower()
+        assert "checks this week: 2" in out
+        assert "visible coaching this week: 1" in out
+        assert "silent decisions this week: 1" in out
 
 
 class TestMemoryExportCLI:
@@ -885,6 +926,86 @@ class TestSessionPatternCLI:
         assert data["issue_type"] == "missing_goal"
         assert data["coaching_text"] != ""
 
+    def test_session_nudge_fires_with_memory_disabled(self, profile):
+        run_coach("enable", profile=profile)
+
+        for i in range(3):
+            payload = json.dumps({
+                "session_id": "short_term_only",
+                "domain": "coding",
+                "issue_type": "missing_goal",
+                "action_taken": "post_answer_tip",
+                "severity": 0.7, "confidence": 0.8,
+                "cost_signal": "high_risk_guess",
+                "evidence_summary": f"short term only turn {i}",
+            })
+            result = run_coach("record-observation", stdin_data=payload, profile=profile)
+            assert result.returncode == 0
+
+        clean = json.dumps({
+            "text": "Convert this JSON to CSV format",
+            "session_id": "short_term_only",
+        })
+        data = json.loads(run_coach("select-action", stdin_data=clean, profile=profile).stdout)
+        assert data["action"] == "session_pattern_nudge"
+        assert data["issue_type"] == "missing_goal"
+
+        patterns = json.loads(run_coach("show-patterns", profile=profile).stdout)
+        assert patterns["patterns"] == []
+
+    def test_session_nudge_uses_pattern_domain_not_current_prompt_domain(self, profile):
+        run_coach("enable", profile=profile)
+
+        for i in range(3):
+            payload = json.dumps({
+                "session_id": "session_domain",
+                "domain": "writing",
+                "issue_type": "missing_goal",
+                "action_taken": "post_answer_tip",
+                "severity": 0.7, "confidence": 0.8,
+                "cost_signal": "high_risk_guess",
+                "evidence_summary": f"writing turn {i}",
+            })
+            run_coach("record-observation", stdin_data=payload, profile=profile)
+
+        clean = json.dumps({
+            "text": "Convert this JSON to CSV format",
+            "session_id": "session_domain",
+        })
+        data = json.loads(run_coach("select-action", stdin_data=clean, profile=profile).stdout)
+        assert data["action"] == "session_pattern_nudge"
+        assert data["domain"] == "writing"
+
+    def test_session_nudge_does_not_repeat_with_memory_disabled(self, profile):
+        run_coach("enable", profile=profile)
+
+        for i in range(3):
+            payload = json.dumps({
+                "session_id": "short_term_repeat",
+                "domain": "coding",
+                "issue_type": "missing_output_contract",
+                "action_taken": "post_answer_tip",
+                "severity": 0.7, "confidence": 0.8,
+                "cost_signal": "output_format_mismatch",
+            })
+            run_coach("record-observation", stdin_data=payload, profile=profile)
+
+        clean = json.dumps({"text": "Translate to English: hi", "session_id": "short_term_repeat"})
+        first = json.loads(run_coach("select-action", stdin_data=clean, profile=profile).stdout)
+        assert first["action"] == "session_pattern_nudge"
+
+        record = json.dumps({
+            "session_id": "short_term_repeat",
+            "domain": first["domain"],
+            "issue_type": first["issue_type"],
+            "action_taken": first["action"],
+            "severity": 0.7, "confidence": 0.8,
+        })
+        run_coach("record-observation", stdin_data=record, profile=profile)
+
+        second = json.loads(run_coach("select-action", stdin_data=clean, profile=profile).stdout)
+        assert second["action"] != "session_pattern_nudge"
+
     def test_session_nudge_does_not_repeat_in_same_session(self, profile):
         run_coach("enable", profile=profile)
         run_coach("set-memory", "on", profile=profile)
@@ -977,8 +1098,48 @@ class TestRetrospectiveCLI:
         result = run_coach("select-action", stdin_data=payload, profile=profile)
         data = json.loads(result.stdout)
         assert data["action"] == "retrospective_reminder"
-        assert data["issue_type"] == "missing_output_contract"
-        assert data["coaching_text"] != ""
+
+    def test_light_budget_still_counts_visible_tips_when_memory_disabled(self, profile):
+        run_coach("enable", profile=profile)
+
+        for i in range(2):
+            select_payload = json.dumps({
+                "text": "帮我写一个接口文档",
+                "session_id": f"budget_memoff_{i}",
+                "agent_classification": {
+                    "issue_type": "missing_output_contract",
+                    "confidence": 0.9,
+                    "severity": 0.8,
+                    "fixability": 0.9,
+                    "cost_signal": "output_format_mismatch",
+                    "domain": "coding",
+                    "is_sensitive": False,
+                    "is_urgent": False,
+                    "evidence_summary": "request lacks output format",
+                },
+            })
+            selected = json.loads(run_coach("select-action", stdin_data=select_payload, profile=profile).stdout)
+            assert selected["action"] in ("post_answer_tip", "pre_answer_micro_nudge")
+
+            record_payload = json.dumps({
+                "session_id": f"budget_memoff_{i}",
+                "domain": selected["domain"],
+                "issue_type": selected["issue_type"],
+                "action_taken": selected["action"],
+                "severity": 0.9,
+                "confidence": 0.8,
+                "fixability": 0.9,
+                "cost_signal": "output_format_mismatch",
+                "evidence_summary": "request lacks output format",
+            })
+            record = run_coach("record-observation", stdin_data=record_payload, profile=profile)
+            assert record.returncode == 0
+
+        third = json.loads(run_coach("select-action", stdin_data=select_payload, profile=profile).stdout)
+        assert third["action"] == "silent_rewrite"
+        assert third["suppressed_reason"] == "budget_exhausted"
+        assert third["issue_type"] == "missing_output_contract"
+        assert third["coaching_text"] == ""
 
     def test_cooldown_blocks_retrospective_after_notification(self, profile):
         """Once a pattern is notified, a fresh call to select-action must NOT
@@ -1074,6 +1235,40 @@ class TestRetrospectiveCLI:
         assert result.returncode == 0
         assert "missing_output_contract" in result.stdout.lower() or "output" in result.stdout.lower()
 
+    def test_recording_retrospective_does_not_increase_pattern_evidence(self, profile):
+        run_coach("enable", profile=profile)
+        run_coach("set-memory", "on", profile=profile)
+
+        for i in range(4):
+            payload = json.dumps({
+                "session_id": f"retro_seed_{i}",
+                "domain": "coding",
+                "issue_type": "missing_output_contract",
+                "action_taken": "post_answer_tip",
+                "severity": 0.65,
+                "confidence": 0.80,
+                "cost_signal": "output_format_mismatch",
+                "evidence_summary": "coding task lacked output format",
+            })
+            run_coach("record-observation", stdin_data=payload, profile=profile)
+
+        before = json.loads(run_coach("show-patterns", profile=profile).stdout)
+        assert before["patterns"][0]["evidence_count"] == 4
+
+        reminder = json.dumps({
+            "session_id": "retro_emit_no_reinforce",
+            "domain": "coding",
+            "issue_type": "missing_output_contract",
+            "action_taken": "retrospective_reminder",
+            "severity": 0.65,
+            "confidence": 0.80,
+            "evidence_summary": "retrospective reminder shown",
+        })
+        run_coach("record-observation", stdin_data=reminder, profile=profile)
+
+        after = json.loads(run_coach("show-patterns", profile=profile).stdout)
+        assert after["patterns"][0]["evidence_count"] == 4
+
     def test_retrospective_uses_pattern_domain_and_domain_scoped_chain(self, profile):
         """The emitted domain must match the selected pattern, not the current prompt.
 
@@ -1161,5 +1356,5 @@ class TestRetrospectiveCLI:
         con.close()
         chain = json.loads(raw_chain)
         assert chain["domain"] == "writing"
-        assert chain["evidence_count"] == 5
-        assert chain["distinct_sessions"] == 5
+        assert chain["evidence_count"] == 4
+        assert chain["distinct_sessions"] == 4

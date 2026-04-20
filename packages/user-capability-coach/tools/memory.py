@@ -21,6 +21,22 @@ from .taxonomy import IssueType, Domain, Action, PatternStatus, CostSignal
 from .time_utils import parse_iso_datetime_utc
 
 
+NON_EVIDENCE_ACTIONS = frozenset({
+    Action.RETROSPECTIVE_REMINDER.value,
+    Action.SESSION_PATTERN_NUDGE.value,
+})
+VISIBLE_DECISION_ACTIONS = frozenset({
+    Action.POST_ANSWER_TIP.value,
+    Action.PRE_ANSWER_MICRO_NUDGE.value,
+    Action.RETROSPECTIVE_REMINDER.value,
+    Action.SESSION_PATTERN_NUDGE.value,
+})
+SILENT_DECISION_ACTIONS = frozenset({
+    Action.SILENT_REWRITE.value,
+    Action.NONE.value,
+})
+
+
 SCHEMA_VERSION = 1
 
 SCHEMA_SQL = """
@@ -81,6 +97,17 @@ CREATE TABLE IF NOT EXISTS intervention_events (
     explanation_chain TEXT
 );
 
+CREATE TABLE IF NOT EXISTS decision_events (
+    id TEXT PRIMARY KEY,
+    ts TEXT NOT NULL,
+    action TEXT NOT NULL,
+    issue_type TEXT,
+    mode TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    detection_source TEXT NOT NULL,
+    suppressed_reason TEXT
+);
+
 -- Per-session short-term memory. Unlike `patterns` (cross-session
 -- longitudinal), `session_turns` accumulates per-turn classifications
 -- within a single session so the policy can detect "3 out of the last 5
@@ -122,6 +149,7 @@ CREATE INDEX IF NOT EXISTS idx_session_turns_ts ON session_turns(ts);
 -- in get_{proactive,retrospective}_count_7d.
 CREATE INDEX IF NOT EXISTS idx_intervention_issue_surface ON intervention_events(issue_type, surface, shown);
 CREATE INDEX IF NOT EXISTS idx_intervention_ts ON intervention_events(ts);
+CREATE INDEX IF NOT EXISTS idx_decision_events_ts ON decision_events(ts);
 """
 
 
@@ -216,6 +244,8 @@ def record_observation(
         evidence_summary = ""
         shadow_only = True
 
+    counts_as_evidence = action_taken.value not in NON_EVIDENCE_ACTIONS
+
     # Session-level short-term turn record. Written on EVERY call — even
     # when observation-layer idempotency below dedupes the current call —
     # because session_turns tracks per-turn granularity ("3 vague turns
@@ -223,16 +253,17 @@ def record_observation(
     # evidence. Recording outside the `with _conn` block below keeps the
     # two writes in separate transactions, which is fine: if a crash
     # loses the session_turn, the observation still stands.
-    record_session_turn(
-        session_id=session_id,
-        issue_type=issue_type,
-        domain=domain,
-        severity=severity,
-        confidence=confidence,
-        shadow_only=shadow_only,
-        platform=platform,
-        profile=profile,
-    )
+    if counts_as_evidence:
+        record_session_turn(
+            session_id=session_id,
+            issue_type=issue_type,
+            domain=domain,
+            severity=severity,
+            confidence=confidence,
+            shadow_only=shadow_only,
+            platform=platform,
+            profile=profile,
+        )
 
     # Use IMMEDIATE so the idempotency SELECT + INSERT pair is atomic
     # against other writers. Otherwise two concurrent writes of the same
@@ -268,7 +299,7 @@ def record_observation(
         )
 
     # Update pattern score if we have an issue_type
-    if issue_type and not shadow_only:
+    if issue_type and not shadow_only and counts_as_evidence:
         _update_pattern(
             issue_type=issue_type,
             domain=domain,
@@ -512,6 +543,14 @@ def forget_pattern(
                 "DELETE FROM observations WHERE issue_type=? AND domain=?",
                 (issue_type.value, domain.value),
             )
+            con.execute(
+                "DELETE FROM session_turns WHERE issue_type=? AND domain=?",
+                (issue_type.value, domain.value),
+            )
+            con.execute(
+                "DELETE FROM decision_events WHERE issue_type=? AND domain=?",
+                (issue_type.value, domain.value),
+            )
         else:
             c = con.execute(
                 "DELETE FROM patterns WHERE issue_type=?",
@@ -521,6 +560,18 @@ def forget_pattern(
                 "DELETE FROM observations WHERE issue_type=?",
                 (issue_type.value,),
             )
+            con.execute(
+                "DELETE FROM session_turns WHERE issue_type=?",
+                (issue_type.value,),
+            )
+            con.execute(
+                "DELETE FROM decision_events WHERE issue_type=?",
+                (issue_type.value,),
+            )
+        con.execute(
+            "DELETE FROM session_nudge_log WHERE issue_type=?",
+            (issue_type.value,),
+        )
         # Intervention events are keyed by issue_type only (no domain column).
         # Delete any event for this issue_type when the caller asks to
         # forget that issue entirely. When a specific domain was given,
@@ -539,6 +590,71 @@ def forget_all(platform: Platform | None = None, profile: str | None = None) -> 
         con.execute("DELETE FROM patterns")
         con.execute("DELETE FROM observations")
         con.execute("DELETE FROM intervention_events")
+        con.execute("DELETE FROM decision_events")
+        con.execute("DELETE FROM session_turns")
+        con.execute("DELETE FROM session_nudge_log")
+
+
+def record_decision(
+    action: Action,
+    *,
+    issue_type: IssueType | None,
+    mode: str,
+    domain: Domain,
+    detection_source: str,
+    suppressed_reason: str | None = None,
+    platform: Platform | None = None,
+    profile: str | None = None,
+) -> str:
+    """Record the result of one select-action evaluation."""
+    ev_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn(platform, profile) as con:
+        con.execute(
+            """INSERT INTO decision_events
+               (id, ts, action, issue_type, mode, domain, detection_source, suppressed_reason)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                ev_id,
+                now,
+                action.value,
+                issue_type.value if issue_type else None,
+                mode,
+                domain.value,
+                detection_source,
+                suppressed_reason,
+            ),
+        )
+    return ev_id
+
+
+def get_decision_counts_7d(
+    platform: Platform | None = None,
+    profile: str | None = None,
+) -> dict[str, int]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    placeholders_visible = ",".join("?" * len(VISIBLE_DECISION_ACTIONS))
+    placeholders_silent = ",".join("?" * len(SILENT_DECISION_ACTIONS))
+    with _conn(platform, profile) as con:
+        checked = con.execute(
+            "SELECT COUNT(*) as c FROM decision_events WHERE ts > ?",
+            (cutoff,),
+        ).fetchone()["c"]
+        surfaced = con.execute(
+            f"""SELECT COUNT(*) as c FROM decision_events
+                WHERE ts > ? AND action IN ({placeholders_visible})""",
+            (cutoff, *VISIBLE_DECISION_ACTIONS),
+        ).fetchone()["c"]
+        silent = con.execute(
+            f"""SELECT COUNT(*) as c FROM decision_events
+                WHERE ts > ? AND action IN ({placeholders_silent})""",
+            (cutoff, *SILENT_DECISION_ACTIONS),
+        ).fetchone()["c"]
+    return {
+        "checked": checked,
+        "surfaced": surfaced,
+        "silent": silent,
+    }
 
 
 def record_intervention(
@@ -598,21 +714,24 @@ def build_explanation_chain(
         # the explanation chain either.
         evidence_count = con.execute(
             "SELECT COUNT(*) as c FROM observations "
-            "WHERE issue_type=? AND domain=? AND shadow_only=0",
-            (issue_type.value, pattern_domain),
+            "WHERE issue_type=? AND domain=? AND shadow_only=0 "
+            "AND action_taken NOT IN (?, ?)",
+            (issue_type.value, pattern_domain, *NON_EVIDENCE_ACTIONS),
         ).fetchone()["c"]
 
         cost_count = con.execute(
             "SELECT COUNT(*) as c FROM observations "
             "WHERE issue_type=? AND domain=? "
-            "AND cost_signal != 'none' AND shadow_only=0",
-            (issue_type.value, pattern_domain),
+            "AND cost_signal != 'none' AND shadow_only=0 "
+            "AND action_taken NOT IN (?, ?)",
+            (issue_type.value, pattern_domain, *NON_EVIDENCE_ACTIONS),
         ).fetchone()["c"]
 
         sessions_count = con.execute(
             "SELECT COUNT(DISTINCT session_id) as c FROM observations "
-            "WHERE issue_type=? AND domain=? AND shadow_only=0",
-            (issue_type.value, pattern_domain),
+            "WHERE issue_type=? AND domain=? AND shadow_only=0 "
+            "AND action_taken NOT IN (?, ?)",
+            (issue_type.value, pattern_domain, *NON_EVIDENCE_ACTIONS),
         ).fetchone()["c"]
 
     last_dt = parse_iso_datetime_utc(pattern["last_notified_at"])

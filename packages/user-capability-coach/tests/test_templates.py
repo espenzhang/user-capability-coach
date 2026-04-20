@@ -226,12 +226,16 @@ class TestStatusAndWhy:
             mode="light",
             memory_enabled=True,
             observation_ends="2026-05-01",
+            checked_7d=3,
+            surfaced_7d=1,
+            silent_7d=2,
             proactive_7d=1,
             retro_7d=0,
             prompt_text="状态",
         )
         assert "light" in status
         assert "开启" in status
+        assert "检查" in status
 
     def test_why_reminded_zh(self):
         chain = {

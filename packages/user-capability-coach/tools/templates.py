@@ -500,6 +500,9 @@ def coach_status(
     mode: str,
     memory_enabled: bool,
     observation_ends: str | None,
+    checked_7d: int,
+    surfaced_7d: int,
+    silent_7d: int,
     proactive_7d: int,
     retro_7d: int,
     prompt_text: str = "",
@@ -510,6 +513,9 @@ def coach_status(
         lines.append(f"长期记忆：{'开启' if memory_enabled else '关闭'}")
         if observation_ends:
             lines.append(f"观察期截止：{observation_ends}")
+        lines.append(f"本周检查：{checked_7d} 次")
+        lines.append(f"本周可见提醒：{surfaced_7d} 次")
+        lines.append(f"本周静默处理：{silent_7d} 次")
         lines.append(f"本周主动提示：{proactive_7d} 次")
         lines.append(f"本周复盘提醒：{retro_7d} 次")
         if dismissed_until:
@@ -520,6 +526,9 @@ def coach_status(
         lines.append(f"Long-term memory: {'on' if memory_enabled else 'off'}")
         if observation_ends:
             lines.append(f"Observation period ends: {observation_ends}")
+        lines.append(f"Checks this week: {checked_7d}")
+        lines.append(f"Visible coaching this week: {surfaced_7d}")
+        lines.append(f"Silent decisions this week: {silent_7d}")
         lines.append(f"Proactive tips this week: {proactive_7d}")
         lines.append(f"Retrospective reminders this week: {retro_7d}")
         if dismissed_until:

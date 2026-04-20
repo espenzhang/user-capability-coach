@@ -163,8 +163,8 @@ Triggering is 100% driven by `coach select-action`. When the CLI returns
 
 Rules enforced by the CLI (you don't need to check these yourself):
 
-- Only fires when memory_enabled + session_id present + not dismissed +
-  not urgent + not sensitive
+- Only fires when session_id is present + not dismissed + not urgent +
+  not sensitive
 - Once per (session, issue_type) — subsequent clean turns revert to silent
 - Doesn't count against 7-day proactive or retrospective budget
 - Doesn't need the 14-day observation period — short-term signal, not

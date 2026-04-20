@@ -44,6 +44,9 @@ Prompt Coach is off. Local data is retained — use `coach memory export` to exp
 Prompt Coach status: light
 Long-term memory: off
 Observation period ends: 2026-05-02
+Checks this week: 7
+Visible coaching this week: 2
+Silent decisions this week: 5
 Proactive tips this week: 1
 Retrospective reminders this week: 0
 ```

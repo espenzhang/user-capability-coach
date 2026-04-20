@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from .taxonomy import (
-    Action, CoachMode, IssueType, V1_VISIBLE_ISSUES,
+    Action, CoachMode, Domain, IssueType, V1_VISIBLE_ISSUES,
     PatternStatus,
 )
 from .detectors import DetectionOutput
@@ -76,6 +76,7 @@ class SessionPatternSummary:
     issue_type: IssueType
     count: int           # turns in window matching this issue_type
     window_size: int     # how many turns were actually examined
+    domain: Domain = Domain.OTHER
 
 
 @dataclass
@@ -136,8 +137,7 @@ def select_action(inp: PolicyInput, cfg: PolicyConfig = DEFAULT_CONFIG) -> Polic
         # before the retrospective check because it's an immediate,
         # in-session signal and doesn't need the 14-day observation period.
         if (
-            inp.memory_enabled
-            and inp.session_pattern is not None
+            inp.session_pattern is not None
             and not inp.session_already_nudged
             and not detection.is_urgent
         ):

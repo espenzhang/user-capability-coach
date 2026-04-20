@@ -35,7 +35,7 @@ It runs entirely on the user's machine. No network calls. No raw prompts stored.
 ## What it does
 
 - **Single-turn coaching**: when the current prompt has a clear, fixable gap (missing output format / bundled phases / unstated goal / etc.), appends a short tip *after* the answer — never interrupts the task.
-- **Session patterns**: spots within-session repetitions (e.g. "3 of the last 5 turns lacked a clear goal") and surfaces a mid-session nudge, once per session per issue.
+- **Session patterns**: spots within-session repetitions (e.g. "3 of the last 5 turns lacked a clear goal") and surfaces a mid-session nudge, once per session per issue. This short-term signal works even when long-term memory is off.
 - **Long-term patterns**: accumulates cross-session patterns with proper evidence thresholds (≥4 observations / ≥3 sessions / ≥2 cost signals), a 14-day observation period before any long-term reminders, and a 14-day cooldown between repeat reminders for the same pattern.
 - **Full user control**: `coach dismiss` for 7-day soft silence, `coach disable` for hard off, `coach forget-pattern` / `coach forget-all` for data deletion, `coach why-reminded` for full audit trail.
 
@@ -45,7 +45,7 @@ It runs entirely on the user's machine. No network calls. No raw prompts stored.
 2. **Task first, coaching second**. Always give the answer first, then (optionally) a short ignorable suggestion. Never block a task on clarification.
 3. **At most one coaching note per turn**. Hard invariant enforced by the policy layer.
 4. **Agent-first classification**. Agents with full conversation context classify each prompt and pass their judgment to coach; rule-based detection is a fallback only.
-5. **Privacy by construction**. No raw prompt text ever lands on disk — only system-generated summaries. Sensitive-domain prompts are content-free records (`shadow_only=1`). Long-term memory defaults to off.
+5. **Privacy by construction**. No raw prompt text ever lands on disk — only system-generated summaries and structured counters. Sensitive-domain prompts are content-free records (`shadow_only=1`). Long-term memory defaults to off.
 6. **Audit everything**. Every retrospective reminder carries a complete `explanation_chain` (evidence count / distinct sessions / cost count / cooldown state / reason). If the chain can't be built, the reminder doesn't fire.
 
 ## Architecture at a glance
@@ -72,7 +72,8 @@ It runs entirely on the user's machine. No network calls. No raw prompts stored.
 │  ├─ observations      — cross-session evidence           │
 │  ├─ patterns          — longitudinal aggregates          │
 │  ├─ session_turns     — short-term within-session        │
-│  ├─ intervention_events — every reminder, with audit chain│
+│  ├─ intervention_events — every shown reminder + audit chain│
+│  ├─ decision_events  — every select-action decision      │
 │  └─ preferences / session_nudge_log / schema_meta        │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -195,7 +196,7 @@ coach set-memory on
 # Promote to standard mode (can do pre-answer nudges on high-severity issues)
 coach set-mode standard
 
-# Check status
+# Check status (includes 7-day checked / visible / silent counts)
 coach status
 
 # See accumulated patterns
@@ -258,10 +259,10 @@ Hard rules (all enforced in code + tested):
 
 1. **Nothing is written until the user runs `coach enable`.**
 2. **No raw prompt text is ever stored.** Only system-generated `evidence_summary`, structured fields (issue_type / domain / timestamps / counts), and pattern scores.
-3. **Long-term memory defaults to off.** Enabling it starts a 14-day observation period during which nothing is surfaced — the system only learns.
+3. **Long-term memory defaults to off.** Enabling it starts a 14-day observation period during which nothing long-term is surfaced — the system only learns. Session-level turns and decision counters are still stored locally while coaching is on so within-session nudges and `coach status` observability can work.
 4. **Sensitive-domain observations are stripped by default.** `domain=sensitive` hits write `issue_type=null, evidence_summary="", shadow_only=1` regardless of what the caller passed. An explicit `coach set-sensitive-logging on` is required to opt in.
-5. **Deletion is permanent.** `forget-pattern` clears patterns + observations + related intervention_events. `forget-all` wipes all three tables.
-6. **Data stays local.** `~/.claude/user-capability-coach/coach.db` (Claude Code) or `~/.local/share/user-capability-coach/coach.db` (Codex) or `~/Library/Application Support/...` (macOS Codex). No network calls, no cloud sync.
+5. **Deletion is permanent.** `forget-pattern` clears patterns + observations + related short-term/session rows + intervention/decision events. `forget-all` wipes every local coaching table.
+6. **Data stays local.** `~/.claude/user-capability-coach/coach.db` (Claude Code) or `$XDG_DATA_HOME/user-capability-coach/coach.db` / `~/.local/share/user-capability-coach/coach.db` (Codex). No network calls, no cloud sync.
 
 ## Reminder safety rails
 
