@@ -1073,3 +1073,93 @@ class TestRetrospectiveCLI:
         result = run_coach("why-reminded", profile=profile)
         assert result.returncode == 0
         assert "missing_output_contract" in result.stdout.lower() or "output" in result.stdout.lower()
+
+    def test_retrospective_uses_pattern_domain_and_domain_scoped_chain(self, profile):
+        """The emitted domain must match the selected pattern, not the current prompt.
+
+        The stored explanation chain should also stay scoped to that
+        pattern's domain instead of merging every domain for the issue type.
+        """
+        run_coach("enable", profile=profile)
+        run_coach("set-memory", "on", profile=profile)
+
+        # Higher-score writing pattern
+        for i in range(4):
+            payload = json.dumps({
+                "session_id": f"retro_write_{i}",
+                "domain": "writing",
+                "issue_type": "missing_output_contract",
+                "action_taken": "post_answer_tip",
+                "severity": 0.65,
+                "confidence": 0.80,
+                "cost_signal": "output_format_mismatch",
+                "evidence_summary": "writing task lacked output format",
+            })
+            run_coach("record-observation", stdin_data=payload, profile=profile)
+
+        # Lower-score coding pattern with the same issue_type
+        for i in range(2):
+            payload = json.dumps({
+                "session_id": f"retro_code_{i}",
+                "domain": "coding",
+                "issue_type": "missing_output_contract",
+                "action_taken": "post_answer_tip",
+                "severity": 0.65,
+                "confidence": 0.80,
+                "cost_signal": "output_format_mismatch",
+                "evidence_summary": "coding task lacked output format",
+            })
+            run_coach("record-observation", stdin_data=payload, profile=profile)
+
+        cfg_path = Path(profile) / "config.json"
+        cfg = json.loads(cfg_path.read_text())
+        from datetime import datetime, timezone, timedelta
+        cfg["observation_period_ends_at"] = (
+            datetime.now(timezone.utc) - timedelta(days=15)
+        ).isoformat()
+        cfg_path.write_text(json.dumps(cfg))
+
+        # Current prompt is tagged as coding, but the top pattern is writing.
+        payload = json.dumps({
+            "text": "Clean prompt with no coaching issue",
+            "session_id": "retro_domain_select",
+            "agent_classification": {
+                "domain": "coding",
+                "issue_type": None,
+            },
+        })
+        result = run_coach("select-action", stdin_data=payload, profile=profile)
+        data = json.loads(result.stdout)
+        assert data["action"] == "retrospective_reminder"
+        assert data["domain"] == "writing"
+
+        # Agent records the emitted reminder using the returned payload.
+        record = json.dumps({
+            "session_id": "retro_domain_emit",
+            "domain": data["domain"],
+            "issue_type": data["issue_type"],
+            "action_taken": data["action"],
+            "severity": 0.65,
+            "confidence": 0.80,
+            "evidence_summary": "retrospective reminder shown",
+        })
+        run_coach("record-observation", stdin_data=record, profile=profile)
+
+        patterns = json.loads(run_coach("show-patterns", profile=profile).stdout)["patterns"]
+        writing = next(p for p in patterns if p["domain"] == "writing")
+        coding = next(p for p in patterns if p["domain"] == "coding")
+        assert writing["last_notified_at"] is not None
+        assert coding["last_notified_at"] is None
+
+        import sqlite3
+        con = sqlite3.connect(str(Path(profile) / "coach.db"))
+        raw_chain = con.execute(
+            "SELECT explanation_chain FROM intervention_events "
+            "WHERE surface='retrospective_reminder' "
+            "ORDER BY ts DESC LIMIT 1"
+        ).fetchone()[0]
+        con.close()
+        chain = json.loads(raw_chain)
+        assert chain["domain"] == "writing"
+        assert chain["evidence_count"] == 5
+        assert chain["distinct_sessions"] == 5

@@ -20,6 +20,17 @@ def test_data_dir_codex():
     assert "user-capability-coach" in str(d)
 
 
+def test_data_dir_codex_uses_xdg_on_darwin(monkeypatch, tmp_path):
+    """Codex install.sh uses XDG_DATA_HOME on all platforms, including macOS."""
+    xdg = tmp_path / "xdg-data"
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("XDG_DATA_HOME", str(xdg))
+
+    d = data_dir(Platform.CODEX)
+
+    assert d == xdg / "user-capability-coach"
+
+
 def test_data_dir_with_profile(tmp_path):
     d = data_dir(profile=str(tmp_path))
     assert d == tmp_path
@@ -35,3 +46,21 @@ def test_ensure_data_dir_creates_dir(tmp_path):
 def test_detect_platform_returns_enum():
     p = detect_platform()
     assert isinstance(p, Platform)
+
+
+def test_detect_platform_prefers_codex_project_markers_over_claude_home(monkeypatch, tmp_path):
+    """A Codex project should still detect as Codex even on machines with ~/.claude."""
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".claude").mkdir(parents=True)
+    project.mkdir()
+    (project / "AGENTS.md").write_text("# project config\n")
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CLAUDE_CODE", raising=False)
+    monkeypatch.delenv("ANTHROPIC_CLAUDE_CODE", raising=False)
+    monkeypatch.delenv("CODEX", raising=False)
+    monkeypatch.delenv("OPENAI_CODEX", raising=False)
+    monkeypatch.chdir(project)
+
+    assert detect_platform() == Platform.CODEX

@@ -572,51 +572,50 @@ def record_intervention(
 
 def build_explanation_chain(
     issue_type: IssueType,
+    domain: Domain | None = None,
     platform: Platform | None = None,
     profile: str | None = None,
 ) -> dict[str, Any] | None:
     """Build a full explanation chain for why-reminded. Returns None if insufficient data."""
     with _conn(platform, profile) as con:
-        pattern = con.execute(
-            "SELECT * FROM patterns WHERE issue_type=? ORDER BY score DESC LIMIT 1",
-            (issue_type.value,),
-        ).fetchone()
+        if domain is not None:
+            pattern = con.execute(
+                "SELECT * FROM patterns WHERE issue_type=? AND domain=? LIMIT 1",
+                (issue_type.value, domain.value),
+            ).fetchone()
+        else:
+            pattern = con.execute(
+                "SELECT * FROM patterns WHERE issue_type=? ORDER BY score DESC LIMIT 1",
+                (issue_type.value,),
+            ).fetchone()
         if pattern is None:
             return None
 
-        # Only count prior *retrospective* reminders for cooldown — POST/PRE
-        # per-turn tips don't start a 14-day retro cooldown. Using shown=1
-        # without filtering the surface caused cooldown to look blocked
-        # whenever there had ever been a visible tip.
-        last_intervention = con.execute(
-            "SELECT ts FROM intervention_events "
-            "WHERE issue_type=? AND shown=1 AND surface='retrospective_reminder' "
-            "ORDER BY ts DESC LIMIT 1",
-            (issue_type.value,),
-        ).fetchone()
+        pattern_domain = pattern["domain"]
 
         # Counts here must mirror what the pattern card sees: shadow
         # observations don't update patterns, so they must not appear in
         # the explanation chain either.
         evidence_count = con.execute(
             "SELECT COUNT(*) as c FROM observations "
-            "WHERE issue_type=? AND shadow_only=0",
-            (issue_type.value,),
+            "WHERE issue_type=? AND domain=? AND shadow_only=0",
+            (issue_type.value, pattern_domain),
         ).fetchone()["c"]
 
         cost_count = con.execute(
             "SELECT COUNT(*) as c FROM observations "
-            "WHERE issue_type=? AND cost_signal != 'none' AND shadow_only=0",
-            (issue_type.value,),
+            "WHERE issue_type=? AND domain=? "
+            "AND cost_signal != 'none' AND shadow_only=0",
+            (issue_type.value, pattern_domain),
         ).fetchone()["c"]
 
         sessions_count = con.execute(
             "SELECT COUNT(DISTINCT session_id) as c FROM observations "
-            "WHERE issue_type=? AND shadow_only=0",
-            (issue_type.value,),
+            "WHERE issue_type=? AND domain=? AND shadow_only=0",
+            (issue_type.value, pattern_domain),
         ).fetchone()["c"]
 
-    last_dt = parse_iso_datetime_utc(last_intervention["ts"]) if last_intervention else None
+    last_dt = parse_iso_datetime_utc(pattern["last_notified_at"])
     last_notified_at = last_dt.isoformat() if last_dt else None
     cooldown_days = 14
 
@@ -629,6 +628,7 @@ def build_explanation_chain(
 
     chain = {
         "issue_type": issue_type.value,
+        "domain": pattern_domain,
         "evidence_count": evidence_count,
         "distinct_sessions": sessions_count,
         "cost_count": cost_count,

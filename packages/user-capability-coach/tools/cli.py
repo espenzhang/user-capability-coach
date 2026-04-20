@@ -217,7 +217,11 @@ def cmd_record_observation(args: argparse.Namespace) -> None:
         return
 
     if action == Action.RETROSPECTIVE_REMINDER and issue_type is not None:
-        chain = memory.build_explanation_chain(issue_type, profile=args.profile)
+        chain = memory.build_explanation_chain(
+            issue_type,
+            domain=domain,
+            profile=args.profile,
+        )
         if chain is not None:
             memory.record_intervention(
                 issue_type=issue_type,
@@ -395,7 +399,11 @@ def cmd_select_action(args: argparse.Namespace) -> None:
         "reason": result.reason,
         "suppressed_reason": result.suppressed_reason,
         "coaching_text": coaching_text,
-        "domain": detection.domain.value,
+        "domain": (
+            top_pat_raw["domain"]
+            if result.action == Action.RETROSPECTIVE_REMINDER and top_pat_raw is not None
+            else detection.domain.value
+        ),
         "is_sensitive": detection.is_sensitive,
         "detection_source": detection_source,  # "agent" | "rules"
     }
