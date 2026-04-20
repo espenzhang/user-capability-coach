@@ -43,6 +43,7 @@ from tools.taxonomy import (
 )
 from tools.policy import PolicyInput, PatternSummary, SessionPatternSummary
 from tools.detectors import detect, build_detection_from_agent
+from tools.time_utils import parse_iso_datetime_utc
 
 
 def _lang_marker(args: argparse.Namespace) -> str:
@@ -99,14 +100,11 @@ def cmd_status(args: argparse.Namespace) -> None:
     dismissed_until_str = None
     if settings.is_recently_dismissed(profile=args.profile):
         raw = cfg.get("last_dismissed_at")
-        if raw:
-            try:
-                from datetime import datetime as _dt, timedelta as _td
-                dismissed_at = _dt.fromisoformat(raw)
-                until = dismissed_at + _td(days=settings.DISMISSAL_WINDOW_DAYS)
-                dismissed_until_str = until.strftime("%Y-%m-%d")
-            except (TypeError, ValueError):
-                pass
+        dismissed_at = parse_iso_datetime_utc(raw)
+        if dismissed_at is not None:
+            from datetime import timedelta as _td
+            until = dismissed_at + _td(days=settings.DISMISSAL_WINDOW_DAYS)
+            dismissed_until_str = until.strftime("%Y-%m-%d")
 
     print(templates.coach_status(
         mode=cfg["mode"],
@@ -328,8 +326,7 @@ def cmd_select_action(args: argparse.Namespace) -> None:
     if top_pat_raw:
         try:
             notified_raw = top_pat_raw.get("last_notified_at")
-            if notified_raw:
-                top_last_notified = datetime.fromisoformat(notified_raw)
+            top_last_notified = parse_iso_datetime_utc(notified_raw)
             top_pat = PatternSummary(
                 issue_type=IssueType(top_pat_raw["issue_type"]),
                 status=PatternStatus(top_pat_raw["status"]),

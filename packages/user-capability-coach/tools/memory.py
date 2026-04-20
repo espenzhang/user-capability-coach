@@ -18,6 +18,7 @@ from typing import Any, Generator
 
 from .platform import Platform, ensure_data_dir
 from .taxonomy import IssueType, Domain, Action, PatternStatus, CostSignal
+from .time_utils import parse_iso_datetime_utc
 
 
 SCHEMA_VERSION = 1
@@ -334,7 +335,7 @@ def _update_pattern(
             # Apply weekly decay: if last_seen_at > 7 days ago, decay.
             # Clamp to >= 0 in case of clock skew (last_seen in the future) —
             # otherwise 0.85 ** negative > 1 would inflate the score.
-            last_seen = datetime.fromisoformat(row["last_seen_at"]) if row["last_seen_at"] else None
+            last_seen = parse_iso_datetime_utc(row["last_seen_at"])
             if last_seen:
                 weeks_elapsed = max(
                     0.0,
@@ -410,7 +411,9 @@ def apply_weekly_decay(platform: Platform | None = None, profile: str | None = N
         for row in rows:
             if not row["last_seen_at"]:
                 continue
-            last_seen = datetime.fromisoformat(row["last_seen_at"])
+            last_seen = parse_iso_datetime_utc(row["last_seen_at"])
+            if last_seen is None:
+                continue
             weeks = max(
                 0.0,
                 (now - last_seen).total_seconds() / (7 * 86400),
@@ -613,11 +616,11 @@ def build_explanation_chain(
             (issue_type.value,),
         ).fetchone()["c"]
 
-    last_notified_at = last_intervention["ts"] if last_intervention else None
+    last_dt = parse_iso_datetime_utc(last_intervention["ts"]) if last_intervention else None
+    last_notified_at = last_dt.isoformat() if last_dt else None
     cooldown_days = 14
 
-    if last_notified_at:
-        last_dt = datetime.fromisoformat(last_notified_at)
+    if last_dt:
         days_since = (datetime.now(timezone.utc) - last_dt).days
         cooldown_ok = days_since >= cooldown_days
     else:

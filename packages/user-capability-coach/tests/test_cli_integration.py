@@ -402,6 +402,28 @@ class TestDismissCLI:
         assert data["action"] in ("post_answer_tip", "pre_answer_micro_nudge")
         assert data["suppressed_reason"] != "user_dismissed"
 
+    def test_naive_dismiss_timestamp_does_not_crash_select_action(self, profile):
+        """Older/manual configs may store a naive ISO timestamp.
+
+        select-action should treat it as UTC instead of crashing on
+        offset-aware vs offset-naive datetime arithmetic.
+        """
+        run_coach("enable", profile=profile)
+        cfg_path = Path(profile) / "config.json"
+        cfg = json.loads(cfg_path.read_text())
+
+        from datetime import datetime, timezone
+        cfg["last_dismissed_at"] = (
+            datetime.now(timezone.utc).replace(tzinfo=None)
+        ).isoformat()
+        cfg_path.write_text(json.dumps(cfg))
+
+        payload = json.dumps({"text": "帮我写一个接口文档", "session_id": "dismiss-naive"})
+        result = run_coach("select-action", stdin_data=payload, profile=profile)
+        assert result.returncode == 0, result.stderr
+        data = json.loads(result.stdout)
+        assert data["suppressed_reason"] == "user_dismissed"
+
 
 class TestLanguageOverride:
     def test_lang_zh_in_disable_ack(self, profile):
@@ -795,6 +817,42 @@ class TestObservationPeriodSemantics:
         assert 13 <= remaining <= 14, (
             f"late memory enable should grant ~14 days, got {remaining}"
         )
+
+    def test_naive_observation_period_timestamp_does_not_crash_retrospective(self, profile):
+        """Legacy/manual configs with naive ISO timestamps should still work."""
+        run_coach("enable", profile=profile)
+        run_coach("set-memory", "on", profile=profile)
+
+        for i in range(4):
+            payload = json.dumps({
+                "session_id": f"naive-obs-{i}",
+                "domain": "coding",
+                "issue_type": "missing_output_contract",
+                "action_taken": "post_answer_tip",
+                "severity": 0.65,
+                "confidence": 0.80,
+                "cost_signal": "output_format_mismatch",
+                "evidence_summary": "naive observation period regression",
+            })
+            run_coach("record-observation", stdin_data=payload, profile=profile)
+
+        cfg_path = Path(profile) / "config.json"
+        cfg = json.loads(cfg_path.read_text())
+
+        from datetime import datetime, timezone, timedelta
+        cfg["observation_period_ends_at"] = (
+            datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=15)
+        ).isoformat()
+        cfg_path.write_text(json.dumps(cfg))
+
+        payload = json.dumps({
+            "text": "Convert this JSON to CSV format",
+            "session_id": "retro-naive-period",
+        })
+        result = run_coach("select-action", stdin_data=payload, profile=profile)
+        assert result.returncode == 0, result.stderr
+        data = json.loads(result.stdout)
+        assert data["action"] == "retrospective_reminder"
 
 
 class TestSessionPatternCLI:

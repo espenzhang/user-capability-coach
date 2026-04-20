@@ -7,6 +7,7 @@ from typing import Any
 
 from .platform import Platform, ensure_data_dir
 from .taxonomy import CoachMode
+from .time_utils import parse_iso_datetime_utc
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -47,11 +48,8 @@ def is_recently_dismissed(
 ) -> bool:
     cfg = load(platform, profile)
     raw = cfg.get("last_dismissed_at")
-    if not raw:
-        return False
-    try:
-        dismissed_at = datetime.fromisoformat(raw)
-    except (TypeError, ValueError):
+    dismissed_at = parse_iso_datetime_utc(raw)
+    if dismissed_at is None:
         return False
     return (datetime.now(timezone.utc) - dismissed_at) < timedelta(days=DISMISSAL_WINDOW_DAYS)
 
@@ -163,7 +161,4 @@ def observation_period_ends_at(
     profile: str | None = None,
 ) -> datetime | None:
     cfg = load(platform, profile)
-    raw = cfg.get("observation_period_ends_at")
-    if not raw:
-        return None
-    return datetime.fromisoformat(raw)
+    return parse_iso_datetime_utc(cfg.get("observation_period_ends_at"))
