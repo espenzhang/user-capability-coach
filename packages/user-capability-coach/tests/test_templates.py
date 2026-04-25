@@ -118,12 +118,16 @@ class TestFirstUseDisclosure:
         assert "会做" in disclosure
         assert "不会做" in disclosure
         assert "关闭" in disclosure
+        assert "当前处于 14 天观察期" not in disclosure
+        assert "长期记忆仍是关闭" in disclosure
 
     def test_en_contains_three_points(self):
         disclosure = templates.first_use_disclosure("turn on coach")
         assert "Will do" in disclosure
         assert "Won't do" in disclosure
         assert "off" in disclosure.lower()
+        assert "currently in a 14-day observation period" not in disclosure
+        assert "Long-term memory is still off" in disclosure
 
 
 # ── Status and why-reminded ────────────────────────────────────────────────

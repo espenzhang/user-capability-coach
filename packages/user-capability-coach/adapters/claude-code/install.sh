@@ -30,12 +30,14 @@ for skill in prompt-coach growth-coach; do
     cp -r "$src" "$dst"
 done
 
-# 2. Create data directory and initialize DB
+# 2. Create data directory, copy CLI tools, and initialize DB
 mkdir -p "$DATA_DIR"
+rm -rf "$DATA_DIR/tools"
+cp -r "$PACKAGE_DIR/tools" "$DATA_DIR/tools"
 python3 -c "
 import sys, json
 from pathlib import Path
-sys.path.insert(0, '$PACKAGE_DIR')
+sys.path.insert(0, '$DATA_DIR')
 from tools import memory, settings
 memory.init_db(profile='$DATA_DIR')
 # Write default config only if not already present (preserve existing user settings)
@@ -48,7 +50,7 @@ if not cfg_path.exists():
 COACH_BIN="$DATA_DIR/coach"
 cat > "$COACH_BIN" <<WRAPPER
 #!/usr/bin/env bash
-exec python3 "$PACKAGE_DIR/tools/cli.py" --profile "$DATA_DIR" "\$@"
+exec python3 "$DATA_DIR/tools/cli.py" --profile "$DATA_DIR" "\$@"
 WRAPPER
 chmod +x "$COACH_BIN"
 

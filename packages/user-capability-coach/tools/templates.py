@@ -454,7 +454,7 @@ FIRST_USE_ZH = """\
 
 ✅ 会做：
 • 当你的请求存在明显缺口时，在答案后附一条可忽略的改写建议
-• 在你授权后，记录反复出现的提问模式（14 天观察期结束后才开始提醒）
+• 在你开启长期记忆后，记录反复出现的提问模式（14 天观察期结束后才开始提醒）
 • 响应 /coach 系列指令（/coach off、/coach status、/coach why 等）
 
 🚫 不会做：
@@ -465,7 +465,7 @@ FIRST_USE_ZH = """\
 
 📴 随时可关闭：输入 /coach off 或"关闭教练"即可。
 
-当前处于 14 天观察期，不会出现长期复盘提醒。\
+长期记忆仍是关闭；只有你单独开启长期记忆后，才会开始 14 天观察期。\
 """
 
 FIRST_USE_EN = """\
@@ -473,7 +473,7 @@ Prompt Coach is now on (light mode). Here's what it will and won't do:
 
 ✅ Will do:
 • When your request has a clear gap, append a short, ignorable suggestion after the answer
-• Record recurring prompt patterns (with your permission) and give a recap after a 14-day observation period
+• After you enable long-term memory, record recurring prompt patterns and give a recap after a 14-day observation period
 • Respond to /coach commands (/coach off, /coach status, /coach why, etc.)
 
 🚫 Won't do:
@@ -484,7 +484,7 @@ Prompt Coach is now on (light mode). Here's what it will and won't do:
 
 📴 Turn off anytime: type /coach off or "turn off coach".
 
-You're currently in a 14-day observation period — no long-term pattern reminders yet.\
+Long-term memory is still off; the 14-day observation period starts only if you enable memory separately.\
 """
 
 

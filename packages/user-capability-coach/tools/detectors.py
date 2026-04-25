@@ -482,8 +482,11 @@ DOMAIN_SIGNALS: dict[Domain, list[str]] = {
 
 
 SENSITIVE_PATTERN_RE = re.compile(
+    # Bare "崩溃了" removed — too broad (e.g., "系统崩溃了", "服务崩溃了" are
+    # engineering parlance). Emotional breakdowns are still caught via
+    # "情绪崩溃" / "mental breakdown" / "心情很差".
     r"(不好的念头|活不下去|不想活|了结生命|轻生|自杀|自残|跳楼|割腕|"
-    r"情绪很差|情绪崩溃|心情很差|崩溃了|吵架|家庭矛盾|"
+    r"情绪很差|情绪崩溃|心情很差|吵架|家庭矛盾|"
     r"孩子失踪|孩子走失|学习障碍|发育迟缓|特殊需要|"
     r"被裁|裁了|失业了|裁员|工作没了|"
     r"suicidal|self.harm|overdose|domestic.violen|mental breakdown|"

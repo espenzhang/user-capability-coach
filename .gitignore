@@ -31,3 +31,6 @@ venv/
 
 # Claude Code local session state (profile-specific, not for the repo)
 .claude/
+
+# Codex project-local install state (generated, profile-specific)
+.agents/

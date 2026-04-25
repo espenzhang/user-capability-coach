@@ -34,7 +34,16 @@ print("  Removed coaching snippet from CLAUDE.md")
 PYEOF
 fi
 
-# 3. Ask about data directory
+# 3. Remove installed executable/tooling, then ask about data directory
+if [ -f "$DATA_DIR/coach" ]; then
+    rm "$DATA_DIR/coach"
+    echo "  Removed coach wrapper"
+fi
+if [ -d "$DATA_DIR/tools" ]; then
+    rm -rf "$DATA_DIR/tools"
+    echo "  Removed installed CLI tools"
+fi
+
 echo ""
 read -r -p "Delete coaching data at $DATA_DIR? [y/N] " confirm
 if [[ "$confirm" =~ ^[Yy]$ ]]; then

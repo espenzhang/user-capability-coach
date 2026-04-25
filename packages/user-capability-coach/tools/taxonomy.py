@@ -71,10 +71,10 @@ class CoachMode(str, Enum):
     LIGHT = "light"
     STANDARD = "standard"
     # Strict mode: agent is instructed (via CLAUDE.md) to invoke
-    # `coach select-action` BEFORE responding to any non-trivial request,
-    # instead of relying on Claude's discretionary skill invocation. Also
-    # raises the 7-day budget caps so a high-volume user doesn't hit the
-    # limit mid-week and revert to silent.
+    # `coach select-action --text ... --session-id ...` at the END of
+    # every non-trivial turn (post-hoc), instead of relying on Claude's
+    # discretionary skill invocation. Also raises the 7-day budget caps
+    # so a high-volume user doesn't hit the limit mid-week.
     STRICT = "strict"
 
 
@@ -169,8 +169,10 @@ SENSITIVE_KEYWORDS: frozenset[str] = frozenset({
     "lawsuit", "被告", "起诉", "法律", "律师", "诉讼", "遗嘱", "离婚", "divorce",
     # financial distress
     "破产", "bankruptcy", "债务", "负债", "loan shark",
-    # emergency
-    "emergency", "紧急", "救命", "事故", "accident",
+    # emergency (not "emergency"/"紧急" alone — those commonly mark engineering
+    # urgency like "紧急线上 bug" and are separately handled by URGENCY_RE.
+    # Only keep the terms that indicate personal/life-threatening emergencies.)
+    "救命", "事故", "accident",
     # family crisis
     "孩子失踪", "家暴", "domestic violence", "abuse",
     # job loss
@@ -188,7 +190,9 @@ SENSITIVE_KEYWORDS: frozenset[str] = frozenset({
     "财务压力", "喘不过气", "还不起", "贷款压力", "逾期", "欠债",
     "资金困难", "周转不过来",
     # family crisis / child safety
-    "吵架", "家庭矛盾", "情绪很差", "心情很差", "情绪崩溃", "崩溃了",
+    # "崩溃了" removed — too broad ("系统崩溃了"/"服务崩溃了" are common tech
+    # usage). Emotional breakdowns are still covered by "情绪崩溃".
+    "吵架", "家庭矛盾", "情绪很差", "心情很差", "情绪崩溃",
     "孩子失踪", "孩子走失", "child hasn't come home", "can't reach",
     "学习障碍", "发育迟缓", "特殊需要", "孩子的问题",
     # job loss (expanded)

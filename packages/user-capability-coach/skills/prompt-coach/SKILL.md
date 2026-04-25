@@ -1,210 +1,86 @@
 ---
 name: prompt-coach
 description: |
-  Single-turn instant coaching for prompt quality gaps. Triggering depends on `coach status` mode.
+  Post-hoc per-turn coaching. After answering a non-trivial user request
+  (code, docs, plans, explanations, debug help, refactors, reviews), run
+  ONE bash command at the END of your response to let the coach decide
+  whether to surface a visible tip.
 
-  MODE = STRICT (user opted into aggressive checking):
-  - ALWAYS invoke `coach select-action` BEFORE responding to any non-trivial request
-    (writing code, docs, plans, explanations, debug help, refactoring, reviews). Pass
-    your best `agent_classification` built from full conversation context.
-  - Exempt: pure greetings, yes/no acks, one-word replies.
-  - Do NOT skip the call because "the prompt looks fine" — in strict the user wants
-    you to check every substantive request. The CLI's policy still decides whether
-    a visible tip surfaces; your job is to always give it the data.
+  Only active when coaching is enabled (check once per session via `coach status`).
 
-  MODE = LIGHT or STANDARD:
-  - Invoke prompt-coach only when ALL of:
-    1. The current request has a CLEAR, HIGH-CONFIDENCE gap in one of:
-       missing_output_contract / overloaded_request / missing_goal /
-       missing_context / unbound_reference / missing_success_criteria /
-       conflicting_instructions / missing_constraints
-    2. The gap is likely to reduce answer quality, force guessing, or require rework
-    3. Not urgent, not emotional, not sensitive
-    4. No coaching note already given this turn
-    5. The gap isn't minor enough that silent_rewrite handles it
-
-  MODE = OFF: never invoke.
-
-  Determine mode once at session start via `coach status` and remember it.
-version: "1.0.0"
+  Run EVERY non-trivial turn in strict mode. In light/standard, run when
+  you judge the request has a likely quality gap. Skip: pure greetings,
+  one-word replies, emotional/sensitive context, urgent situations.
+version: "2.0.0"
 ---
 
 # prompt-coach
 
-You are the **single-turn coaching layer** of the User Capability Coach. Your job is to help the user ask better questions — but only when coaching is enabled, the gap is real, and the coaching benefit clearly outweighs the interruption cost.
-
-## Execution sequence
-
-### Step 1 — Classify with context, then call coach
-
-**You have the full conversation history and repo context; the coach
-CLI sees only the current prompt text. So YOU classify, THEN ask coach
-to decide whether and how to surface it.**
-
-Before calling coach, make a judgment about the current user prompt
-considering:
-- Prior turns in this conversation (did they already specify format /
-  goal / scope? Is "再来一次" / "fix it" / "继续" clearly resolvable?)
-- Files and repo state you've seen (does "加测试" have an obvious
-  pytest pattern? Is "改一下" a reasonable request given what's open?)
-- Sensitive or urgent cues the user just surfaced
-
-Output your judgment as an `agent_classification` object and pass it
-to coach:
+**One-command post-hoc flow.** You answer first, then at the very end of
+the same turn run:
 
 ```
-coach select-action
-```
-with stdin JSON:
-```json
-{
-  "text": "<current user message>",
-  "session_id": "<stable per-conversation id>",
-  "agent_classification": {
-    "issue_type": "missing_output_contract",
-    "confidence": 0.85,
-    "severity": 0.75,
-    "fixability": 0.9,
-    "cost_signal": "output_format_mismatch",
-    "domain": "coding",
-    "is_sensitive": false,
-    "is_urgent": false,
-    "evidence_summary": "user asked for 'API doc' — format wasn't specified this turn or in prior 3 turns, and the repo has no existing doc pattern to mimic"
-  }
-}
+coach select-action --text="<verbatim last user message>" --session-id="<stable per-conversation id>"
 ```
 
-Rules for your classification:
+This ONE call decides the action AND records the observation. No JSON to
+construct, no separate `record-observation` call needed.
 
-- **`issue_type`** — STRICT enum. Must be one of:
-  - `missing_output_contract`, `overloaded_request`, `missing_goal` (rule + agent)
-  - `missing_context`, `unbound_reference`, `missing_success_criteria`, `conflicting_instructions` (rule + agent)
-  - `missing_constraints` (agent-only)
-  - `null` — when context resolves ambiguity. **Set null liberally** — suppressing regex false-positives is a feature.
-  Invalid values reject the whole classification and fall back to rules (coach will tell you via `agent_cls_error`).
-- **`domain`** — LENIENT. Canonical values: `coding / writing / research / planning / ops / sensitive / other`. Common synonyms like `docs / documentation / email / article` auto-map to `writing`; `api / programming / debug / test / testing` → `coding`; `infra / devops / deploy / security` → `ops`; `design / product / strategy` → `planning`; `analysis / compare` → `research`. Unknown values soft-map to `other` (don't reject the classification). Pick the closest canonical value when you're unsure.
-- **`cost_signal`** — LENIENT. Canonical: `high_risk_guess / clarification_needed / output_format_mismatch / rework_required / none`. Unknown → `none` (soft fallback).
-- **`confidence` and `severity`** are both 0.0–1.0. Below policy thresholds (0.70 / 0.50) the classification won't surface as visible coaching regardless. Be honest — don't inflate to force a tip.
-- **`evidence_summary`** must be a system-generated description, NOT the user's raw words. This is what lands in the local DB.
-- **Omit the field entirely** if you genuinely can't judge (slow fallback to rules is fine).
+**Session id**: use any string that's stable for the duration of the
+conversation and distinct across conversations. A hash of the first user
+message works. If you pass no `--session-id`, coach generates an `anon-*`
+fallback — but long-term session-count metrics will be off. Prefer
+stable ids.
 
-The returned `action` tells you what to render:
+**Important — use `=` form**: always write `--text="<msg>"` and
+`--session-id="<id>"` (with `=`), NOT `--text "<msg>"`. When the user's
+message starts with a dash (e.g., `"-h"` or `"- check this"`) argparse
+will mis-parse the space-separated form. The `=` form is unambiguous.
 
-If `action` is `"none"` → do your job without any coaching. Skip to step 4.
-If `action` is `"silent_rewrite"` → proceed with best interpretation, no visible coaching. Skip to step 4.
-If `action` is `"post_answer_tip"` or `"pre_answer_micro_nudge"` → proceed to step 2.
-If `action` is `"retrospective_reminder"` or `"session_pattern_nudge"` → delegate to growth-coach (these are pattern-level surfaces it owns). Don't also emit a per-turn tip — 1 visible coaching per turn max.
+## What to do with the output
 
-Also note `detection_source` in the response: `"agent"` means your classification was used, `"rules"` means coach fell back (usually due to malformed payload — check stderr).
+The CLI returns JSON with an `action` field. React per action:
 
-If `suppressed_reason` is `"user_dismissed"`, the user recently said "don't remind me". Respect it: silent_rewrite for the rest of the 7-day window. Never override.
+- **`post_answer_tip`** → append the returned `coaching_text` on a new
+  line, prefixed with `💡`. One tip per turn, max 2 sentences.
+- **`silent_rewrite`** → do nothing visible. The CLI already logged it.
+- **`none`** → nothing to do.
+- **`pre_answer_micro_nudge`** → in post-hoc flow we don't interrupt the
+  answer, so treat the same as `post_answer_tip` (render as 💡 tip).
+- **`retrospective_reminder`** / **`session_pattern_nudge`** → delegate to
+  growth-coach. Do NOT also emit a per-turn tip (one visible coaching
+  per turn max).
 
+If `suppressed_reason = "user_dismissed"`, the user recently said "don't
+remind me" — stay silent for 7 days. Never override.
 
-### Step 2 — Handle pre-answer nudge (standard mode only)
+## When to skip the call entirely
 
-If `action = "pre_answer_micro_nudge"`, prepend the `coaching_text` from the CLI output **before** your answer. Then continue answering using the most reasonable default assumption.
+- Pure greetings / acks / yes-no / one-word replies
+- Emotional, sensitive, or urgent context (the policy also suppresses
+  these, but skipping the call saves a CLI hop)
+- You already emitted a coaching note this turn via growth-coach
 
-Format:
+## Advanced: passing agent_classification (optional)
+
+If you have high-value context (prior turns, repo state) that changes
+your judgment about the prompt, pass `--agent-json '<json-string>'` or
+pipe the full JSON on stdin — both accept the same classification
+schema (see `references/agent_classification.md`). Stdin-JSON mode does
+NOT auto-record (for backward compat); callers must separately invoke
+`record-observation` if they want pattern accumulation.
+
+The `--text`-only form (no agent_classification) is the default — use it
+unless you're confident the agent context beats rule-based detection.
+
+## Example
+
+User: "帮我写一个接口文档"
+
 ```
-> ⚡ [coaching_text]
+[you write the API doc in default markdown]
 
-[your answer here]
-```
-
-Never leave the task suspended. Always give an answer or a concrete next step.
-
-### Step 3 — Handle post-answer tip
-
-If `action = "post_answer_tip"`, give your complete answer first. Then append the `coaching_text` at the very end, separated by a blank line:
-
-```
-[your complete answer]
-
----
-💡 [coaching_text]
-```
-
-Keep the tip to 1–2 sentences max. Point out exactly one issue. Include the example from the CLI output if present.
-
-### Step 4 — Record observation
-
-After generating your answer, call:
-```
-coach record-observation
-```
-with stdin JSON:
-```json
-{
-  "session_id": "<session_id>",
-  "domain": "<domain from select-action output>",
-  "issue_type": "<issue_type or null>",
-  "action_taken": "<action from select-action>",
-  "severity": <float>,
-  "confidence": <float>,
-  "fixability": <float>,
-  "cost_signal": "<cost_signal>",
-  "evidence_summary": "<one-sentence non-verbatim description of the gap>",
-  "shadow_only": false
-}
-```
-
-`evidence_summary` must be a system-generated description, NOT the user's raw text. Example: "coding task lacked output format — assistant defaulted to markdown".
-
-## Rules for visible coaching text
-
-1. **Give the answer first** (or at minimum a concrete direction) before any coaching.
-2. **One issue per turn**. Never list multiple problems.
-3. **Neutral language**: "next time, add X" not "your prompt was bad".
-4. **Give a copyable example**: one concrete rewrite of part of the prompt.
-5. **Make it ignorable**: no guilt, no pressure. The user can skip it.
-6. **Max 2 sentences** for the visible coaching note.
-
-## What NOT to do
-
-- Never say "your prompt is bad / unclear / insufficient".
-- Never list 3+ improvement suggestions.
-- Never add coaching text in mode=off.
-- Never leave the task unanswered while waiting for prompt clarification.
-- Never write a coaching comment about prompt quality in sensitive/urgent contexts.
-- Never add coaching if the issue is minor and silent_rewrite handles it.
-- Never handle `action=retrospective_reminder` here — that's growth-coach's surface. If it returns to you, forward it and do NOT also emit a per-turn tip (one visible coaching per turn max).
-- Never fall back to a literal "unknown" session_id. Pass a stable per-conversation id so long-term `distinct_sessions` accounting is correct.
-
-## Silent rewrite behavior
-
-When `action = "silent_rewrite"`:
-- Internally restructure the user's intent into the clearest interpretation.
-- If you rely on assumptions, mention them briefly and naturally in the answer (e.g., "Treating this as Python 3 — let me know if you need another version").
-- Do NOT announce "I rewrote your prompt" or "I clarified your request".
-- Still record the observation so long-term patterns accumulate.
-
-## Examples
-
-**User**: "帮我写一个接口文档"  
-**action**: post_answer_tip / missing_output_contract  
-**Output**:
-```
-[complete API doc in default markdown format]
-
----
 💡 下次加一句格式说明会让结果更直接可用，比如：「输出 markdown 表格，包含接口名、参数、返回值三列」。
 ```
 
-**User**: "分析这个系统然后给重构方案、代码、测试、上线步骤"  
-**action**: post_answer_tip / overloaded_request  
-**Output**:
-```
-[phased analysis: first an assessment, then a plan outline]
-
----
-💡 这类多阶段任务拆开给我会更稳，比如先只要「分析」，确认方向后再要「方案」。
-```
-
-**User**: "看看这个" (no content)  
-**action**: pre_answer_micro_nudge / missing_goal  
-**Output**:
-```
-> ⚡ 我可以先继续，但还缺一个明确目标。如果你不补充，我会按「总结」处理。
-
-[answer assuming the goal is "summarize"]
-```
+The 💡 line comes verbatim from `coaching_text` in the CLI output.

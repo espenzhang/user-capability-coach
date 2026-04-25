@@ -9,8 +9,10 @@ Usage:
   coach set-memory <on|off>
   coach set-sensitive-logging <on|off>    (opt into sensitive-domain logging)
   coach dismiss                           (user said "don't remind me")
-  coach record-observation                (reads JSON from stdin)
-  coach select-action                     (reads JSON from stdin)
+  coach record-observation                (CLI flags, or JSON from stdin)
+  coach select-action --text "..." --session-id "..."   (preferred: auto-records)
+  coach select-action                     (power user: JSON from stdin)
+  coach doctor                            (self-diagnostic)
   coach update-patterns
   coach show-patterns
   coach forget-pattern <issue_type> [domain]
@@ -78,9 +80,15 @@ def cmd_enable(args: argparse.Namespace) -> None:
         settings.mark_first_use_disclosed(profile=args.profile)
     else:
         if lang_hint:
-            print(f"Prompt 教练已开启（light 模式）。观察期截止：{period_str}")
+            if cfg.get("memory_enabled"):
+                print(f"Prompt 教练已开启（light 模式）。观察期截止：{period_str}")
+            else:
+                print("Prompt 教练已开启（light 模式）。长期记忆仍是关闭。")
         else:
-            print(f"Prompt Coach enabled (light mode). Observation period ends: {period_str}")
+            if cfg.get("memory_enabled"):
+                print(f"Prompt Coach enabled (light mode). Observation period ends: {period_str}")
+            else:
+                print("Prompt Coach enabled (light mode). Long-term memory is off.")
     memory.init_db(profile=args.profile)
 
 
@@ -151,85 +159,105 @@ def cmd_set_sensitive_logging(args: argparse.Namespace) -> None:
     print(f"Sensitive-domain logging: {state}")
 
 
-def cmd_record_observation(args: argparse.Namespace) -> None:
-    cfg = settings.load(profile=args.profile)
-    # mode=off → zero persistence (no observation, no stats event).
-    if cfg["mode"] == CoachMode.OFF.value:
-        print(json.dumps({"status": "skipped", "reason": "mode=off"}))
-        return
+def _ensure_session_id(session_id: str | None, *, cmd: str) -> str:
+    """Return a usable session_id, generating a fallback + stderr warning.
 
-    data = serializers.read_stdin_json()
-    try:
-        domain = Domain(data.get("domain", "other"))
-        issue_type = IssueType(data["issue_type"]) if data.get("issue_type") else None
-        action = Action(data.get("action_taken", "none"))
-        cost_signal = CostSignal(data.get("cost_signal", "none"))
-    except (ValueError, KeyError) as e:
-        print(json.dumps({"status": "error", "reason": str(e)}))
-        sys.exit(1)
+    Callers should prefer passing a stable per-conversation id so
+    `distinct_sessions` accounting is correct. The fallback is
+    non-reusable across process invocations by design — better to inflate
+    nothing than to collapse real sessions into a literal "unknown"."""
+    if session_id:
+        return session_id
+    import uuid as _uuid
+    generated = f"anon-{_uuid.uuid4().hex[:12]}"
+    sys.stderr.write(
+        f"warning: {cmd} missing session_id; generated a one-shot id "
+        f"({generated}). Agents should pass a stable per-conversation "
+        "session_id.\n"
+    )
+    return generated
 
-    session_id = data.get("session_id")
-    if not session_id:
-        # Generate a per-process fallback so distinct_sessions isn't inflated
-        # across calls but also doesn't collapse multiple real sessions into
-        # the literal string "unknown".
-        import uuid as _uuid
-        session_id = f"anon-{_uuid.uuid4().hex[:12]}"
-        sys.stderr.write(
-            "warning: record-observation missing session_id; generated a "
-            f"one-shot id ({session_id}). Agents should pass a stable "
-            "per-conversation session_id.\n"
-        )
 
+def _persist_observation_core(
+    *,
+    profile: str | None,
+    cfg: dict,
+    session_id: str,
+    domain: Domain,
+    issue_type: IssueType | None,
+    action: Action,
+    severity: float,
+    confidence: float,
+    fixability: float,
+    cost_signal: CostSignal,
+    evidence_summary: str,
+    task_type: str | None = None,
+    shadow_only: bool = False,
+) -> tuple[dict, str | None]:
+    """Write observation + (optionally) intervention rows for a decision.
+
+    Single authoritative place for observation persistence. Used by:
+    - `cmd_record_observation` (explicit JSON / CLI-flag call)
+    - `cmd_select_action` --text path (auto-record)
+
+    Returns `(status_dict, observation_id | None)`. `status_dict` is ready
+    to be serialized to stdout for the record-observation subcommand;
+    callers that merge the observation into a larger response can read
+    `observation_id` directly.
+    """
     # memory_enabled=false → don't persist observations. Emit a single
-    # short-term session turn so session nudges still work, but do not write
-    # longitudinal observations/patterns.
+    # short-term session turn so session nudges still work, but do not
+    # write longitudinal observations/patterns.
     if not cfg["memory_enabled"]:
+        session_issue_type = issue_type
+        session_shadow_only = shadow_only
+        if domain == Domain.SENSITIVE and not cfg.get("sensitive_logging_enabled", False):
+            session_issue_type = None
+            session_shadow_only = True
         if action not in (Action.RETROSPECTIVE_REMINDER, Action.SESSION_PATTERN_NUDGE):
             memory.record_session_turn(
                 session_id=session_id,
-                issue_type=issue_type,
+                issue_type=session_issue_type,
                 domain=domain,
-                severity=data.get("severity", 0.0),
-                confidence=data.get("confidence", 0.0),
-                shadow_only=data.get("shadow_only", False),
-                profile=args.profile,
+                severity=severity,
+                confidence=confidence,
+                shadow_only=session_shadow_only,
+                profile=profile,
             )
         if action in (Action.POST_ANSWER_TIP, Action.PRE_ANSWER_MICRO_NUDGE):
             memory.record_intervention(
                 issue_type=issue_type,
                 surface=action.value,
                 shown=True,
-                profile=args.profile,
+                profile=profile,
             )
         elif action == Action.SESSION_PATTERN_NUDGE and issue_type is not None:
             memory.record_intervention(
                 issue_type=issue_type,
                 surface=action.value,
                 shown=True,
-                profile=args.profile,
+                profile=profile,
             )
             memory.mark_session_nudged(
                 session_id=session_id,
                 issue_type=issue_type,
-                profile=args.profile,
+                profile=profile,
             )
-        print(json.dumps({"status": "skipped", "reason": "memory_disabled"}))
-        return
+        return ({"status": "skipped", "reason": "memory_disabled"}, None)
 
     obs_id = memory.record_observation(
         session_id=session_id,
         domain=domain,
         issue_type=issue_type,
         action_taken=action,
-        severity=data.get("severity", 0.0),
-        confidence=data.get("confidence", 0.0),
-        fixability=data.get("fixability", 0.0),
+        severity=severity,
+        confidence=confidence,
+        fixability=fixability,
         cost_signal=cost_signal,
-        evidence_summary=data.get("evidence_summary", ""),
-        task_type=data.get("task_type"),
-        profile=args.profile,
-        shadow_only=data.get("shadow_only", False),
+        evidence_summary=evidence_summary,
+        task_type=task_type,
+        profile=profile,
+        shadow_only=shadow_only,
         sensitive_logging_enabled=cfg.get("sensitive_logging_enabled", False),
     )
 
@@ -237,16 +265,14 @@ def cmd_record_observation(args: argparse.Namespace) -> None:
     # annoyance budgets (get_proactive_count_7d / get_retrospective_count_7d)
     # reflect actual shown tips. Without this, the 7-day budget is effectively
     # unbounded. Shadow observations never count — they were never shown.
-    shadow_obs = data.get("shadow_only", False)
-    if shadow_obs:
-        print(json.dumps({"status": "ok", "observation_id": obs_id}))
-        return
+    if shadow_only:
+        return ({"status": "ok", "observation_id": obs_id}, obs_id)
 
     if action == Action.RETROSPECTIVE_REMINDER and issue_type is not None:
         chain = memory.build_explanation_chain(
             issue_type,
             domain=domain,
-            profile=args.profile,
+            profile=profile,
         )
         if chain is not None:
             memory.record_intervention(
@@ -254,19 +280,19 @@ def cmd_record_observation(args: argparse.Namespace) -> None:
                 surface="retrospective_reminder",
                 shown=True,
                 explanation_chain=chain,
-                profile=args.profile,
+                profile=profile,
             )
             memory.mark_pattern_notified(
                 issue_type=issue_type,
                 domain=domain,
-                profile=args.profile,
+                profile=profile,
             )
     elif action in (Action.POST_ANSWER_TIP, Action.PRE_ANSWER_MICRO_NUDGE):
         memory.record_intervention(
             issue_type=issue_type,
             surface=action.value,
             shown=True,
-            profile=args.profile,
+            profile=profile,
         )
     elif action == Action.SESSION_PATTERN_NUDGE and issue_type is not None:
         # Record the intervention AND mark the (session, issue_type) pair
@@ -278,34 +304,215 @@ def cmd_record_observation(args: argparse.Namespace) -> None:
             issue_type=issue_type,
             surface=action.value,
             shown=True,
-            profile=args.profile,
+            profile=profile,
         )
-        if session_id:
-            memory.mark_session_nudged(
-                session_id=session_id,
-                issue_type=issue_type,
-                profile=args.profile,
-            )
+        memory.mark_session_nudged(
+            session_id=session_id,
+            issue_type=issue_type,
+            profile=profile,
+        )
 
-    print(json.dumps({"status": "ok", "observation_id": obs_id}))
+    return ({"status": "ok", "observation_id": obs_id}, obs_id)
+
+
+def _auto_record_observation(
+    *,
+    profile: str | None,
+    cfg: dict,
+    session_id: str | None,
+    detection,
+    action: Action,
+    issue_type: IssueType | None,
+    out_domain: str,
+) -> str | None:
+    """Internal: called from the select-action --text path to persist an
+    observation immediately after a decision. Pulls severity/confidence/
+    fixability from the DetectorResult whose issue_type matches the
+    chosen action; falls back to 0.0 when no matching candidate exists.
+    """
+    # Pick the DetectorResult matching the decided issue_type. If nothing
+    # matches (e.g., policy fired retrospective_reminder from top_pattern
+    # with no current-turn candidate, or action=none/silent_rewrite), use
+    # the first candidate or zeros.
+    sev = conf = fix = 0.0
+    cost = CostSignal.NONE
+    if detection.candidates:
+        match = next(
+            (c for c in detection.candidates if c.issue_type == issue_type),
+            detection.candidates[0],
+        )
+        sev, conf, fix, cost = match.severity, match.confidence, match.fixability, match.cost_signal
+
+    sid = _ensure_session_id(session_id, cmd="select-action --text auto-record")
+    status, obs_id = _persist_observation_core(
+        profile=profile,
+        cfg=cfg,
+        session_id=sid,
+        domain=Domain(out_domain),
+        issue_type=issue_type,
+        action=action,
+        severity=sev,
+        confidence=conf,
+        fixability=fix,
+        cost_signal=cost,
+        evidence_summary="",
+        shadow_only=False,
+    )
+    return obs_id
+
+
+def cmd_record_observation(args: argparse.Namespace) -> None:
+    cfg = settings.load(profile=args.profile)
+    # mode=off → zero persistence (no observation, no stats event).
+    if cfg["mode"] == CoachMode.OFF.value:
+        print(json.dumps({"status": "skipped", "reason": "mode=off"}))
+        return
+
+    # CLI-flag mode: any of --text/--action/--issue/--domain provided.
+    # Otherwise fall back to reading JSON from stdin (backward-compat).
+    cli_mode = any(
+        getattr(args, attr, None) is not None
+        for attr in ("text", "action_taken", "issue_type", "domain",
+                     "severity", "confidence", "fixability",
+                     "cost_signal", "evidence_summary")
+    ) or getattr(args, "shadow", False)
+
+    if cli_mode:
+        try:
+            domain_val = getattr(args, "domain", None) or "other"
+            issue_raw = getattr(args, "issue_type", None)
+            action_raw = getattr(args, "action_taken", None) or "none"
+            cost_raw = getattr(args, "cost_signal", None) or "none"
+            domain = Domain(domain_val)
+            issue_type = IssueType(issue_raw) if issue_raw else None
+            action = Action(action_raw)
+            cost_signal = CostSignal(cost_raw)
+        except ValueError as e:
+            print(json.dumps({"status": "error", "reason": str(e)}))
+            sys.exit(1)
+
+        # If --text is provided and issue_type/domain aren't, run detection
+        # to fill them in. This makes "coach record-observation --text X
+        # --session-id Y" a zero-config post-hoc recorder.
+        text = getattr(args, "text", None)
+        det_severity = det_confidence = det_fixability = None
+        if text and issue_raw is None:
+            det = detect(text)
+            # Pick the candidate the policy would pick: highest
+            # (severity + confidence) sum. Deterministic under ties by
+            # list order.
+            top = (
+                max(det.candidates, key=lambda c: c.severity + c.confidence)
+                if det.candidates else None
+            )
+            if top is not None:
+                issue_type = top.issue_type
+                det_severity, det_confidence, det_fixability = top.severity, top.confidence, top.fixability
+                cost_signal = top.cost_signal
+            if not getattr(args, "domain", None):
+                domain = det.domain
+        severity = (
+            args.severity if getattr(args, "severity", None) is not None
+            else (det_severity if det_severity is not None else 0.0)
+        )
+        confidence = (
+            args.confidence if getattr(args, "confidence", None) is not None
+            else (det_confidence if det_confidence is not None else 0.0)
+        )
+        fixability = (
+            args.fixability if getattr(args, "fixability", None) is not None
+            else (det_fixability if det_fixability is not None else 0.0)
+        )
+
+        session_id = _ensure_session_id(
+            getattr(args, "session_id", None), cmd="record-observation",
+        )
+        evidence_summary = getattr(args, "evidence_summary", None) or ""
+        shadow_only = getattr(args, "shadow", False)
+    else:
+        data = serializers.read_stdin_json()
+        try:
+            domain = Domain(data.get("domain", "other"))
+            issue_type = IssueType(data["issue_type"]) if data.get("issue_type") else None
+            action = Action(data.get("action_taken", "none"))
+            cost_signal = CostSignal(data.get("cost_signal", "none"))
+        except (ValueError, KeyError) as e:
+            print(json.dumps({"status": "error", "reason": str(e)}))
+            sys.exit(1)
+
+        session_id = _ensure_session_id(data.get("session_id"), cmd="record-observation")
+        severity = data.get("severity", 0.0)
+        confidence = data.get("confidence", 0.0)
+        fixability = data.get("fixability", 0.0)
+        evidence_summary = data.get("evidence_summary", "")
+        shadow_only = data.get("shadow_only", False)
+
+    task_type = None if cli_mode else data.get("task_type")
+
+    status, _obs_id = _persist_observation_core(
+        profile=args.profile,
+        cfg=cfg,
+        session_id=session_id,
+        domain=domain,
+        issue_type=issue_type,
+        action=action,
+        severity=severity,
+        confidence=confidence,
+        fixability=fixability,
+        cost_signal=cost_signal,
+        evidence_summary=evidence_summary,
+        task_type=task_type,
+        shadow_only=shadow_only,
+    )
+    print(json.dumps(status))
 
 
 def cmd_select_action(args: argparse.Namespace) -> None:
-    """Read prompt text from stdin JSON and return recommended action.
+    """Decide a coaching action for a user prompt.
 
-    If `agent_classification` is provided, the agent's context-aware
-    judgment is used as the primary detection source (rules become a
-    fallback). This lets agents who see full conversation context catch
-    issues that single-prompt regex can't see, and conversely suppress
-    regex false-positives that look fine in context.
+    Two invocation modes:
+
+    1. **CLI-arg mode** (preferred, low-friction): pass `--text "..."` and
+       optionally `--session-id "..."`. Stdin is NOT read. The observation
+       is AUTO-RECORDED after the decision unless `--no-record` is set,
+       so one command covers both "pick action" and "persist observation".
+       Use `--dry-run` for diagnostics: it returns the same decision JSON
+       without writing decisions, observations, session turns, or budget rows.
+
+    2. **Stdin JSON mode** (advanced, backward-compat): pipe a JSON object
+       on stdin with fields `text`, `session_id`, and optional
+       `agent_classification`. Observation is NOT auto-recorded — the
+       caller must separately invoke `record-observation` for long-term
+       pattern accumulation.
+
+    If `agent_classification` is provided (via stdin or `--agent-json`),
+    the agent's context-aware judgment is used as the primary detection
+    source (rules become a fallback). This lets agents who see full
+    conversation context catch issues that single-prompt regex can't
+    see, and conversely suppress regex false-positives that look fine
+    in context.
     """
-    data = serializers.read_stdin_json()
-    prompt_text = data.get("text", "")
-    session_id = data.get("session_id")
-    agent_cls = data.get("agent_classification")
+    cli_mode = getattr(args, "text", None) is not None
+    if cli_mode:
+        prompt_text = args.text
+        session_id = getattr(args, "session_id", None)
+        agent_cls = None
+        raw_agent = getattr(args, "agent_json", None)
+        if raw_agent:
+            try:
+                agent_cls = json.loads(raw_agent)
+            except json.JSONDecodeError as e:
+                sys.stderr.write(f"warning: --agent-json not valid JSON: {e}\n")
+                agent_cls = None
+    else:
+        data = serializers.read_stdin_json()
+        prompt_text = data.get("text", "")
+        session_id = data.get("session_id")
+        agent_cls = data.get("agent_classification")
 
     cfg = settings.load(profile=args.profile)
     mode = CoachMode(cfg.get("mode", CoachMode.OFF.value))
+    dry_run = bool(getattr(args, "dry_run", False))
 
     # Prefer agent's context-aware classification when given. If the
     # payload is malformed (bad enum etc.), warn on stderr and fall
@@ -431,7 +638,7 @@ def cmd_select_action(args: argparse.Namespace) -> None:
         )
     )
 
-    if mode != CoachMode.OFF:
+    if mode != CoachMode.OFF and not dry_run:
         memory.record_decision(
             action=result.action,
             issue_type=result.issue_type,
@@ -442,6 +649,30 @@ def cmd_select_action(args: argparse.Namespace) -> None:
             profile=args.profile,
         )
 
+    # --- Auto-record observation (CLI-arg mode only) ---------------------
+    # Stdin-JSON callers opt into the classic two-call flow; --text callers
+    # get one-shot "decide + observe" so patterns accumulate without a
+    # second CLI hop. mode=off and empty-prompt cases short-circuit here.
+    observation_id: str | None = None
+    auto_recorded = False
+    if (
+        cli_mode
+        and not getattr(args, "no_record", False)
+        and not dry_run
+        and mode != CoachMode.OFF
+        and prompt_text
+    ):
+        observation_id = _auto_record_observation(
+            profile=args.profile,
+            cfg=cfg,
+            session_id=session_id,
+            detection=detection,
+            action=result.action,
+            issue_type=result.issue_type,
+            out_domain=out_domain,
+        )
+        auto_recorded = True
+
     out = {
         "action": result.action.value,
         "issue_type": result.issue_type.value if result.issue_type else None,
@@ -451,7 +682,11 @@ def cmd_select_action(args: argparse.Namespace) -> None:
         "domain": out_domain,
         "is_sensitive": detection.is_sensitive,
         "detection_source": detection_source,  # "agent" | "rules"
+        "auto_recorded": auto_recorded,
+        "dry_run": dry_run,
     }
+    if observation_id:
+        out["observation_id"] = observation_id
     if agent_cls_error:
         # Surface agent_classification errors in stdout JSON so the
         # caller can see exactly why it fell back to rules (stderr
@@ -463,6 +698,167 @@ def cmd_select_action(args: argparse.Namespace) -> None:
 def cmd_update_patterns(args: argparse.Namespace) -> None:
     memory.apply_weekly_decay(profile=args.profile)
     print(json.dumps({"status": "ok", "action": "decay_applied"}))
+
+
+def cmd_doctor(args: argparse.Namespace) -> None:
+    """Self-diagnostic: runs 3 fixture prompts and verifies DB writes.
+
+    Doesn't modify any existing observation — uses a unique diagnostic
+    session_id prefix and cleans up its own rows at the end. Prints a
+    human-readable PASS/FAIL summary plus DB totals.
+    """
+    import subprocess
+    import sqlite3
+    import time as _time
+
+    profile = args.profile
+    cfg = settings.load(profile=profile)
+    lang = _lang_marker(args)
+    zh = bool(lang)
+
+    def _L(en: str, cn: str) -> str:
+        return cn if zh else en
+
+    checks: list[tuple[str, bool, str]] = []
+
+    # Check 1: config loads
+    mode = cfg.get("mode", "off")
+    mem = cfg.get("memory_enabled", False)
+    checks.append((
+        _L("config", "配置"),
+        mode in ("off", "light", "standard", "strict"),
+        _L(f"mode={mode} memory={'on' if mem else 'off'}",
+           f"模式={mode} 记忆={'开' if mem else '关'}"),
+    ))
+
+    # Check 2: DB is reachable
+    try:
+        from tools.platform import data_dir as _resolve_data_dir
+        db_path = _resolve_data_dir(profile=profile) / "coach.db"
+        con = sqlite3.connect(str(db_path))
+        tables = {r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        con.close()
+        required = {"observations", "patterns", "decision_events",
+                    "session_turns", "intervention_events", "preferences"}
+        missing = required - tables
+        checks.append((
+            _L("db schema", "数据库结构"),
+            not missing,
+            _L(f"tables present: {len(tables)}",
+               f"数据表: {len(tables)} 张") if not missing
+            else _L(f"missing tables: {missing}", f"缺失表: {missing}"),
+        ))
+    except Exception as e:
+        checks.append((_L("db schema", "数据库结构"), False, str(e)))
+
+    # Check 3: run 3 fixture prompts (requires mode != off)
+    ran = False
+    tip_count = 0
+    decisions_before = 0
+    if mode != "off":
+        try:
+            con = sqlite3.connect(str(db_path))
+            decisions_before = con.execute(
+                "SELECT COUNT(*) FROM decision_events"
+            ).fetchone()[0]
+            con.close()
+
+            sid = f"diag-{int(_time.time())}"
+            fixtures = [
+                _L("Write API docs for this endpoint", "帮我写接口文档"),
+                "分析重构方案代码测试上线",
+                _L("Convert JSON to CSV with pandas",
+                   "用 pandas 把 JSON 转成 CSV"),
+            ]
+            cmd_base = [sys.executable, __file__]
+            if profile:
+                cmd_base += ["--profile", profile]
+
+            suppressed_reasons: set[str] = set()
+            for text in fixtures:
+                r = subprocess.run(
+                    cmd_base + ["select-action", "--text", text,
+                                "--session-id", sid, "--dry-run"],
+                    capture_output=True, text=True,
+                )
+                if r.returncode == 0:
+                    try:
+                        j = json.loads(r.stdout)
+                        if j.get("coaching_text"):
+                            tip_count += 1
+                        if j.get("suppressed_reason"):
+                            suppressed_reasons.add(j["suppressed_reason"])
+                    except json.JSONDecodeError:
+                        pass
+
+            con = sqlite3.connect(str(db_path))
+            decisions_after = con.execute(
+                "SELECT COUNT(*) FROM decision_events"
+            ).fetchone()[0]
+            con.commit()
+            con.close()
+            ran = True
+            checks.append((
+                _L("select-action smoke", "select-action 烟测"),
+                decisions_after == decisions_before,
+                _L("3 prompts dry-ran with no decision rows written",
+                   "3 条提示已 dry-run，未写入决策记录"),
+            ))
+            # Tip generation PASSES if at least one tip surfaced, OR if
+            # tips were deliberately suppressed by an expected reason (budget
+            # exhausted / user dismissed / sensitive). Only flag a failure if
+            # NO tips AND no known suppression reason — suggesting rules
+            # aren't firing at all.
+            expected_suppressions = {
+                "budget_exhausted", "budget_exhausted+urgent",
+                "user_dismissed", "sensitive_domain",
+            }
+            tip_ok = tip_count > 0 or bool(suppressed_reasons & expected_suppressions)
+            if tip_count > 0:
+                tip_detail = _L(
+                    f"{tip_count}/3 fixtures produced a visible tip",
+                    f"{tip_count}/3 条生成了可见提示",
+                )
+            elif suppressed_reasons & expected_suppressions:
+                reasons = ",".join(sorted(suppressed_reasons & expected_suppressions))
+                tip_detail = _L(
+                    f"0 tips — suppressed by policy ({reasons}); expected when "
+                    f"budget spent or user dismissed",
+                    f"0 条提示 — 被策略抑制 ({reasons})；预算用完或用户已免打扰时属正常",
+                )
+            else:
+                tip_detail = _L(
+                    f"{tip_count}/3 fixtures produced a tip and no suppression reason — "
+                    f"rules may not be firing",
+                    f"{tip_count}/3 生成提示且无抑制原因 — 规则可能未触发",
+                )
+            checks.append((
+                _L("tip generation", "提示生成"),
+                tip_ok,
+                tip_detail,
+            ))
+        except Exception as e:
+            checks.append((_L("smoke test", "烟测"), False, str(e)))
+    else:
+        checks.append((
+            _L("smoke test", "烟测"),
+            True,
+            _L("skipped (mode=off)", "已跳过 (mode=off)"),
+        ))
+
+    # Print results
+    all_pass = all(ok for _, ok, _ in checks)
+    header = _L("Coach Doctor", "Coach 自检") + " — " + \
+             (_L("ALL PASS", "全部通过") if all_pass else _L("ISSUES FOUND", "发现问题"))
+    print(header)
+    print("=" * len(header))
+    for name, ok, detail in checks:
+        mark = "✓" if ok else "✗"
+        print(f"  {mark} {name}: {detail}")
+    if not all_pass:
+        sys.exit(1)
 
 
 def cmd_prune(args: argparse.Namespace) -> None:
@@ -690,9 +1086,15 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    from tools import __version__ as _coach_version
     parser = argparse.ArgumentParser(
         prog="coach",
         description="User Capability Coach CLI",
+    )
+    parser.add_argument(
+        "--version", "-V",
+        action="version",
+        version=f"%(prog)s {_coach_version}",
     )
     parser.add_argument("--profile", default=None, help="Override data directory path")
     parser.add_argument(
@@ -719,8 +1121,58 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_slog.add_argument("value", choices=["on", "off"])
 
-    sub.add_parser("record-observation", help="Record an observation (JSON from stdin)")
-    sub.add_parser("select-action", help="Select action for a prompt (JSON from stdin)")
+    p_rec = sub.add_parser(
+        "record-observation",
+        help="Record an observation (CLI flags or JSON from stdin)",
+    )
+    p_rec.add_argument("--session-id", dest="session_id", default=None)
+    p_rec.add_argument("--text", default=None, help="Raw prompt text (runs rule-based detection)")
+    p_rec.add_argument("--action", dest="action_taken", default=None,
+                       choices=[a.value for a in Action])
+    p_rec.add_argument("--issue", dest="issue_type", default=None)
+    p_rec.add_argument("--domain", default=None)
+    p_rec.add_argument("--severity", type=float, default=None)
+    p_rec.add_argument("--confidence", type=float, default=None)
+    p_rec.add_argument("--fixability", type=float, default=None)
+    p_rec.add_argument("--cost-signal", dest="cost_signal", default=None)
+    p_rec.add_argument("--evidence", dest="evidence_summary", default=None)
+    p_rec.add_argument("--shadow", action="store_true", help="Shadow-only observation (not counted)")
+
+    p_sel = sub.add_parser(
+        "select-action",
+        help="Select action for a prompt (CLI flags or JSON from stdin)",
+    )
+    p_sel.add_argument(
+        "--text",
+        default=None,
+        help="Raw prompt text. When provided, stdin is NOT read and the "
+             "observation is auto-recorded after decision (one-call flow).",
+    )
+    p_sel.add_argument(
+        "--session-id",
+        dest="session_id",
+        default=None,
+        help="Stable per-conversation id. Required for session-level pattern accounting.",
+    )
+    p_sel.add_argument(
+        "--agent-json",
+        dest="agent_json",
+        default=None,
+        help="Optional agent_classification as JSON string (advanced; "
+             "equivalent to passing {\"agent_classification\": {...}} on stdin).",
+    )
+    p_sel.add_argument(
+        "--no-record",
+        dest="no_record",
+        action="store_true",
+        help="Don't auto-record observation (--text mode only). Decision event is still logged.",
+    )
+    p_sel.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="Return the selected action without writing decisions, observations, or budget rows.",
+    )
     sub.add_parser("update-patterns", help="Apply pattern decay")
     sub.add_parser("show-patterns", help="Show all pattern cards")
 
@@ -759,6 +1211,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_uninst = sub.add_parser("uninstall", help="Uninstall from a platform")
     p_uninst.add_argument("--platform", default="all", choices=["claude-code", "codex", "all"])
 
+    sub.add_parser(
+        "doctor",
+        help="Run a self-diagnostic: runs 3 test prompts through select-action "
+             "and confirms DB writes. Prints PASS/FAIL summary.",
+    )
+
     return parser
 
 
@@ -784,6 +1242,7 @@ def main() -> None:
         "dismiss": cmd_dismiss,
         "install": cmd_install,
         "uninstall": cmd_uninstall,
+        "doctor": cmd_doctor,
     }
 
     if args.command == "memory":

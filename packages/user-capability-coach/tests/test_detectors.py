@@ -180,6 +180,58 @@ class TestDetectorInvariants:
         if r.is_sensitive:
             assert not r.candidates
 
+    def test_engineering_urgency_is_not_sensitive(self):
+        """Regression: '紧急' / 'urgent' / 'emergency' alone are engineering
+        urgency, not personal sensitivity. They MUST NOT force domain=SENSITIVE
+        (which would suppress coaching for ordinary on-call work)."""
+        from tools.taxonomy import Domain
+        cases = [
+            ("紧急！帮我看看这个线上bug", Domain.CODING),
+            ("紧急 bug", Domain.CODING),
+            ("urgent: fix this deploy", Domain.CODING),
+            ("emergency: production database down", Domain.CODING),
+        ]
+        for text, expected_domain in cases:
+            r = detect(text)
+            assert r.domain == expected_domain, (
+                f"{text!r} got domain={r.domain.value}, expected {expected_domain.value}"
+            )
+            assert r.is_sensitive is False, f"{text!r} was flagged sensitive"
+            # Urgency flag should fire for the urgency keywords
+            assert r.is_urgent is True, f"{text!r} should be urgent"
+
+    def test_true_sensitive_still_caught(self):
+        """Ensure the fix for engineering urgency didn't remove real sensitivity."""
+        from tools.taxonomy import Domain
+        cases = [
+            "我最近感觉很抑郁",
+            "救命啊，活不下去了",
+            "紧急事故",          # 事故 remains a sensitive keyword
+            "紧急手术",          # 手术 is a health keyword
+        ]
+        for text in cases:
+            r = detect(text)
+            assert r.domain == Domain.SENSITIVE, (
+                f"{text!r} got domain={r.domain.value}, expected SENSITIVE"
+            )
+            assert r.is_sensitive is True, f"{text!r} lost sensitive flag"
+
+    def test_technical_crash_is_not_sensitive(self):
+        """Regression: bare '崩溃了' is commonly tech-speak ('系统崩溃了',
+        '服务崩溃了'). Only emotional breakdown patterns ('情绪崩溃',
+        '心情很差', 'mental breakdown') should be sensitive."""
+        from tools.taxonomy import Domain
+        # Technical — must NOT be sensitive
+        for text in ["系统崩溃了", "服务崩溃了", "生产环境崩溃了"]:
+            r = detect(text)
+            assert not r.is_sensitive, f"{text!r} wrongly flagged sensitive"
+            assert r.domain != Domain.SENSITIVE, f"{text!r} wrongly domain=sensitive"
+        # Emotional — must STILL be sensitive
+        for text in ["情绪崩溃了", "mental breakdown", "心情很差"]:
+            r = detect(text)
+            assert r.is_sensitive, f"{text!r} lost sensitive flag"
+            assert r.domain == Domain.SENSITIVE, f"{text!r} lost sensitive domain"
+
     def test_social_phrase_no_candidates(self):
         for phrase in ["hi", "hello", "thanks", "好的", "明白", "谢谢"]:
             r = detect(phrase)

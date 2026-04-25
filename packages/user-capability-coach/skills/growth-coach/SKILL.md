@@ -20,43 +20,38 @@ You are the **long-term coaching layer** of the User Capability Coach. You maint
 
 ## Execution at turn end (automatic mode)
 
-After the main answer and any immediate coaching note are done, run:
+**In the post-hoc model, prompt-coach's single `coach select-action --text
+...` call already decides everything, records the observation, AND builds
+the retrospective explanation chain when applicable.** Your job here is
+only to RENDER a retrospective reminder when prompt-coach's output signals
+one, and to periodically apply pattern decay.
 
-```
-coach update-patterns
-```
+1. If prompt-coach's `coach select-action --text ...` returned
+   `action="retrospective_reminder"` this turn and no other coaching was
+   already shown, append its `coaching_text` after the answer:
 
-Then check if a retrospective reminder should be emitted:
-
-```
-coach select-action
-```
-(same call as prompt-coach; use the returned `action` — if it's `"retrospective_reminder"` and no other coaching was shown this turn, proceed below)
-
-### Emitting a retrospective reminder
-
-**Before emitting, you MUST build and store an explanation chain.**
-
-1. Build the explanation chain:
-```
-coach why-reminded
-```
-
-2. If the chain is incomplete or returns an error → **do not emit the reminder**. Log the suppression in `intervention_events` via `coach record-observation` with `shadow_only: true`.
-
-3. If the chain is complete, append after the answer:
 ```
 [complete answer]
 
 ---
-📊 [retrospective_reminder text from templates]
+📊 [coaching_text from the select-action output]
 ```
 
-4. Record the intervention:
+   The CLI has already recorded the intervention and marked the pattern
+   as notified. You do NOT need a second `record-observation` call.
+
+2. If you need details of *why* the reminder fired (to explain to the
+   user, not for persistence), run:
 ```
-coach record-observation
+coach why-reminded
 ```
-with `action_taken: "retrospective_reminder"`, `shadow_only: false`.
+
+3. Weekly housekeeping — once per session is enough, cheap:
+```
+coach update-patterns
+```
+This applies decay and prunes stale state. Runs independent of any
+specific turn.
 
 ## Explicit user commands
 

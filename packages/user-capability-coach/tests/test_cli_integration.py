@@ -18,6 +18,7 @@ PACKAGE_DIR = Path(__file__).parent.parent
 CLI = str(PACKAGE_DIR / "tools" / "cli.py")
 CODEX_INSTALL = str(PACKAGE_DIR / "adapters" / "codex" / "install.sh")
 CODEX_UNINSTALL = str(PACKAGE_DIR / "adapters" / "codex" / "uninstall.sh")
+CLAUDE_INSTALL = str(PACKAGE_DIR / "adapters" / "claude-code" / "install.sh")
 
 
 def run_coach(*args, stdin_data: str | None = None, profile: str | None = None) -> subprocess.CompletedProcess:
@@ -78,6 +79,21 @@ def run_codex_uninstall(
     )
 
 
+def run_claude_install(tmp_path: Path) -> tuple[subprocess.CompletedProcess, dict[str, str]]:
+    home = tmp_path / "home"
+    (home / ".local" / "bin").mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    result = subprocess.run(
+        ["bash", CLAUDE_INSTALL],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(PACKAGE_DIR),
+    )
+    return result, env
+
+
 @pytest.fixture
 def profile(tmp_path):
     profile_dir = str(tmp_path)
@@ -133,6 +149,213 @@ class TestSelectActionCLI:
         data = json.loads(result.stdout)
         required = {"action", "issue_type", "reason", "suppressed_reason", "coaching_text", "domain", "is_sensitive"}
         assert required.issubset(data.keys())
+
+
+class TestSelectActionBareText:
+    """CLI-arg mode: `coach select-action --text X --session-id Y`.
+
+    This is the low-friction post-hoc path. A single call must:
+      1. Return the same decision JSON as stdin mode,
+      2. Record a decision_event,
+      3. Auto-record an observation (unless --no-record or mode=off or good prompt),
+      4. NOT read stdin at all.
+    """
+
+    def _db_counts(self, profile):
+        import sqlite3
+        con = sqlite3.connect(str(Path(profile) / "coach.db"))
+        out = {
+            "decisions": con.execute("SELECT COUNT(*) FROM decision_events").fetchone()[0],
+            "observations": con.execute("SELECT COUNT(*) FROM observations").fetchone()[0],
+            "session_turns": con.execute("SELECT COUNT(*) FROM session_turns").fetchone()[0],
+            "interventions": con.execute("SELECT COUNT(*) FROM intervention_events").fetchone()[0],
+        }
+        con.close()
+        return out
+
+    def test_bare_text_returns_valid_output(self, profile):
+        """--text mode must return the same required fields as stdin mode."""
+        run_coach("enable", profile=profile)
+        result = run_coach(
+            "select-action", "--text", "帮我写一个接口文档", "--session-id", "bare-001",
+            profile=profile,
+        )
+        assert result.returncode == 0, result.stderr
+        data = json.loads(result.stdout)
+        required = {"action", "issue_type", "reason", "suppressed_reason",
+                    "coaching_text", "domain", "is_sensitive", "auto_recorded"}
+        assert required.issubset(data.keys())
+        assert data["auto_recorded"] is True
+
+    def test_bare_text_auto_records_observation(self, profile):
+        """A weak prompt in light mode must produce one decision + one observation."""
+        run_coach("enable", profile=profile)
+        run_coach("set-memory", "on", profile=profile)
+        before = self._db_counts(profile)
+        run_coach(
+            "select-action", "--text", "帮我写一个接口文档", "--session-id", "bare-002",
+            profile=profile,
+        )
+        after = self._db_counts(profile)
+        assert after["decisions"] == before["decisions"] + 1
+        assert after["observations"] == before["observations"] + 1
+        assert after["session_turns"] == before["session_turns"] + 1
+
+    def test_bare_text_no_record_flag_skips_observation(self, profile):
+        """--no-record must record a decision but NOT an observation."""
+        run_coach("enable", profile=profile)
+        run_coach("set-memory", "on", profile=profile)
+        before = self._db_counts(profile)
+        result = run_coach(
+            "select-action", "--text", "帮我写一个接口文档",
+            "--session-id", "bare-003", "--no-record",
+            profile=profile,
+        )
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["auto_recorded"] is False
+        after = self._db_counts(profile)
+        assert after["decisions"] == before["decisions"] + 1
+        assert after["observations"] == before["observations"]
+
+    def test_bare_text_dry_run_has_no_persistence_side_effects(self, profile):
+        """--dry-run lets diagnostics inspect the selected action without
+        consuming visible-tip budget or writing any tracking rows."""
+        run_coach("enable", profile=profile)
+        run_coach("set-memory", "on", profile=profile)
+        before = self._db_counts(profile)
+
+        result = run_coach(
+            "select-action", "--text", "帮我写一个接口文档",
+            "--session-id", "bare-dry-run", "--dry-run",
+            profile=profile,
+        )
+
+        assert result.returncode == 0, result.stderr
+        data = json.loads(result.stdout)
+        assert data["action"] == "post_answer_tip"
+        assert data["coaching_text"]
+        assert data["auto_recorded"] is False
+        assert data["dry_run"] is True
+        after = self._db_counts(profile)
+        assert after == before
+
+    def test_bare_text_good_prompt_silent_rewrite(self, profile):
+        """A good prompt auto-records a 'silent_rewrite' observation (for data
+        completeness) but emits no visible tip."""
+        run_coach("enable", profile=profile)
+        run_coach("set-memory", "on", profile=profile)
+        result = run_coach(
+            "select-action", "--text", "Convert this JSON to CSV format",
+            "--session-id", "bare-004",
+            profile=profile,
+        )
+        data = json.loads(result.stdout)
+        assert data["action"] == "silent_rewrite"
+        assert data["coaching_text"] == ""
+        assert data["auto_recorded"] is True
+
+    def test_bare_text_mode_off_no_persistence(self, profile):
+        """mode=off: --text returns action=none and writes NOTHING to the DB."""
+        before = self._db_counts(profile)
+        result = run_coach(
+            "select-action", "--text", "帮我写一个接口文档",
+            "--session-id", "bare-005",
+            profile=profile,
+        )
+        data = json.loads(result.stdout)
+        assert data["action"] == "none"
+        after = self._db_counts(profile)
+        # mode=off: decision + observation both suppressed
+        assert after == before
+
+    def test_bare_text_sensitive_suppressed(self, profile):
+        """Sensitive prompt must return none regardless of enablement."""
+        run_coach("enable", profile=profile)
+        result = run_coach(
+            "select-action", "--text", "I've been feeling very depressed",
+            "--session-id", "bare-006",
+            profile=profile,
+        )
+        data = json.loads(result.stdout)
+        assert data["action"] == "none"
+        assert data["is_sensitive"] is True
+
+    def test_bare_text_sensitive_memory_off_records_shadow_session_turn(self, profile):
+        """With memory disabled, sensitive turns may be counted locally for
+        session mechanics but must stay shadow_only so they cannot feed
+        visible pattern nudges or contradict the privacy contract."""
+        import sqlite3
+
+        run_coach("enable", profile=profile)
+        result = run_coach(
+            "select-action", "--text", "I've been feeling very depressed",
+            "--session-id", "sensitive-memory-off",
+            profile=profile,
+        )
+        assert result.returncode == 0, result.stderr
+        data = json.loads(result.stdout)
+        assert data["action"] == "none"
+        assert data["is_sensitive"] is True
+
+        con = sqlite3.connect(str(Path(profile) / "coach.db"))
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT domain, issue_type, shadow_only FROM session_turns "
+            "WHERE session_id='sensitive-memory-off'"
+        ).fetchall()
+        con.close()
+
+        assert len(rows) == 1
+        assert rows[0]["domain"] == "sensitive"
+        assert rows[0]["issue_type"] is None
+        assert rows[0]["shadow_only"] == 1
+
+    def test_bare_text_missing_session_id_generates_fallback(self, profile):
+        """Missing --session-id falls back to a one-shot anon-* id + stderr warn."""
+        run_coach("enable", profile=profile)
+        run_coach("set-memory", "on", profile=profile)
+        result = run_coach(
+            "select-action", "--text", "帮我写一个接口文档",
+            profile=profile,
+        )
+        assert result.returncode == 0
+        assert "missing session_id" in result.stderr
+
+    def test_stdin_mode_does_not_auto_record(self, profile):
+        """Stdin-JSON mode must NOT auto-record observations (backward compat).
+        Callers are responsible for a separate record-observation call."""
+        run_coach("enable", profile=profile)
+        run_coach("set-memory", "on", profile=profile)
+        before = self._db_counts(profile)
+        payload = json.dumps({"text": "帮我写一个接口文档", "session_id": "stdin-compat-001"})
+        result = run_coach("select-action", stdin_data=payload, profile=profile)
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data.get("auto_recorded") is False
+        after = self._db_counts(profile)
+        assert after["decisions"] == before["decisions"] + 1
+        assert after["observations"] == before["observations"]  # unchanged
+
+    def test_agent_json_flag_works_same_as_stdin(self, profile):
+        """--agent-json accepts the classification inline (for agents that
+        want to pass judgment via flag instead of stdin)."""
+        run_coach("enable", profile=profile)
+        agent_cls = json.dumps({
+            "issue_type": "missing_output_contract",
+            "confidence": 0.9,
+            "severity": 0.8,
+            "fixability": 0.9,
+            "domain": "coding",
+        })
+        result = run_coach(
+            "select-action", "--text", "帮我写一个接口文档",
+            "--session-id", "bare-007", "--agent-json", agent_cls,
+            profile=profile,
+        )
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["detection_source"] == "agent"
 
 
 class TestRecordObservationCLI:
@@ -194,6 +417,110 @@ class TestRecordObservationCLI:
         assert data["status"] == "ok"
         assert "observation_id" in data
 
+    def test_flag_mode_basic(self, profile):
+        """record-observation accepts CLI flags (no stdin)."""
+        run_coach("enable", profile=profile)
+        run_coach("set-memory", "on", profile=profile)
+        result = run_coach(
+            "record-observation",
+            "--session-id", "flag-001",
+            "--action", "post_answer_tip",
+            "--issue", "missing_output_contract",
+            "--domain", "coding",
+            "--severity", "0.7",
+            "--confidence", "0.8",
+            profile=profile,
+        )
+        assert result.returncode == 0, result.stderr
+        data = json.loads(result.stdout)
+        assert data["status"] == "ok"
+        assert "observation_id" in data
+
+    def test_text_only_zero_config_record(self, profile):
+        """record-observation --text auto-classifies via detection.
+        Running with just --text + --session-id + --action should write an observation
+        with issue_type/domain derived from the prompt."""
+        run_coach("enable", profile=profile)
+        run_coach("set-memory", "on", profile=profile)
+        result = run_coach(
+            "record-observation",
+            "--text", "帮我写一个接口文档",
+            "--session-id", "text-001",
+            "--action", "post_answer_tip",
+            profile=profile,
+        )
+        assert result.returncode == 0, result.stderr
+        data = json.loads(result.stdout)
+        assert data["status"] == "ok"
+        # Verify the written row has the detected issue_type, not a default
+        import sqlite3
+        con = sqlite3.connect(str(Path(profile) / "coach.db"))
+        row = con.execute(
+            "SELECT issue_type, domain FROM observations "
+            "WHERE session_id = ? ORDER BY ts DESC LIMIT 1",
+            ("text-001",),
+        ).fetchone()
+        con.close()
+        assert row is not None
+        assert row[0] == "missing_output_contract"
+        assert row[1] == "coding"
+
+
+class TestVersionFlag:
+    """`coach --version` prints the package version; useful for debugging."""
+
+    def test_version_flag_exits_zero(self):
+        """--version prints and exits 0 without touching any profile."""
+        result = run_coach("--version")
+        assert result.returncode == 0
+        assert "coach " in result.stdout  # format: "coach <version>"
+        # Must not error on missing profile
+        assert not result.stderr
+
+    def test_short_v_flag_works(self):
+        """-V short form also works."""
+        result = run_coach("-V")
+        assert result.returncode == 0
+        assert "coach " in result.stdout
+
+
+class TestDoctorCommand:
+    """`coach doctor` self-diagnostic: runs 3 test prompts + verifies DB schema."""
+
+    def test_doctor_all_pass_on_fresh_profile(self, profile):
+        """A freshly-enabled profile should pass all 4 checks."""
+        run_coach("enable", profile=profile)
+        run_coach("set-memory", "on", profile=profile)
+        result = run_coach("doctor", profile=profile)
+        assert result.returncode == 0, f"doctor failed: {result.stdout}\n{result.stderr}"
+        out = result.stdout
+        assert "Coach Doctor" in out
+        assert "ALL PASS" in out
+        assert "✓ config" in out
+        assert "✓ db schema" in out
+        assert "✓ select-action smoke" in out
+        assert "✓ tip generation" in out
+
+    def test_doctor_skips_smoke_when_mode_off(self, profile):
+        """mode=off → doctor should still pass (skips smoke test gracefully)."""
+        result = run_coach("doctor", profile=profile)
+        assert result.returncode == 0, f"doctor failed: {result.stdout}\n{result.stderr}"
+        assert "skipped" in result.stdout or "已跳过" in result.stdout
+
+    def test_doctor_cleans_up_its_diagnostic_rows(self, profile):
+        """Doctor must NOT leave behind decision rows from its test prompts."""
+        import sqlite3
+        run_coach("enable", profile=profile)
+        run_coach("set-memory", "on", profile=profile)
+        con = sqlite3.connect(str(Path(profile) / "coach.db"))
+        before = con.execute("SELECT COUNT(*) FROM decision_events").fetchone()[0]
+        con.close()
+        run_coach("doctor", profile=profile)
+        con = sqlite3.connect(str(Path(profile) / "coach.db"))
+        after = con.execute("SELECT COUNT(*) FROM decision_events").fetchone()[0]
+        con.close()
+        assert after == before, f"doctor leaked {after - before} rows"
+
 
 class TestCorruptConfigRecovery:
     def test_corrupt_config_falls_back_to_defaults(self, tmp_path):
@@ -240,6 +567,19 @@ class TestStatusCLI:
         result = run_coach("status", profile=profile)
         assert result.returncode == 0
         assert "light" in result.stdout.lower()
+
+    def test_reenable_memory_off_does_not_claim_observation_period(self, profile):
+        """The 14-day observation period starts only after memory is enabled,
+        so repeated enable output must not print a fake N/A deadline."""
+        first = run_coach("--lang", "en", "enable", profile=profile)
+        assert first.returncode == 0
+
+        second = run_coach("--lang", "en", "enable", profile=profile)
+        assert second.returncode == 0
+        out = second.stdout.lower()
+        assert "observation period ends" not in out
+        assert "n/a" not in out
+        assert "long-term memory is off" in out
 
     def test_status_shows_off_after_disable(self, profile):
         """status reverts to off after disable."""
@@ -290,6 +630,18 @@ class TestStatusCLI:
 
 
 class TestCodexInstallScripts:
+    def test_generated_agents_directory_is_gitignored(self):
+        """Project-local Codex installs are generated runtime state, not
+        source. Keeping them untracked prevents stale wrappers and copied
+        tools from drifting away from packages/user-capability-coach."""
+        gitignore = PACKAGE_DIR.parent.parent / ".gitignore"
+        ignored = {
+            line.strip()
+            for line in gitignore.read_text().splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        assert ".agents/" in ignored
+
     def test_project_install_creates_wrapper_and_unambiguous_agents_command(self, tmp_path):
         project_root = tmp_path / "project"
         project_root.mkdir()
@@ -348,6 +700,33 @@ class TestCodexInstallScripts:
         agents_md = codex_home / "AGENTS.md"
         assert "<!-- user-capability-coach:start -->" not in agents_md.read_text()
         assert not (codex_home / "skills" / "user-capability-coach").exists()
+
+
+class TestClaudeInstallScripts:
+    def test_claude_install_copies_tools_and_wrapper_uses_installed_copy(self, tmp_path):
+        result, env = run_claude_install(tmp_path)
+
+        assert result.returncode == 0, result.stderr
+        home = Path(env["HOME"])
+        data_dir = home / ".claude" / "user-capability-coach"
+        wrapper = data_dir / "coach"
+        installed_cli = data_dir / "tools" / "cli.py"
+
+        assert wrapper.exists()
+        assert installed_cli.exists()
+        wrapper_text = wrapper.read_text()
+        assert str(PACKAGE_DIR) not in wrapper_text
+        assert str(installed_cli) in wrapper_text
+
+        status = subprocess.run(
+            [str(wrapper), "status"],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(home),
+        )
+        assert status.returncode == 0, status.stderr
+        assert "off" in status.stdout.lower()
 
 
 class TestMemoryExportCLI:
