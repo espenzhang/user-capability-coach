@@ -1,16 +1,6 @@
 ---
 name: prompt-coach
-description: |
-  Post-hoc per-turn coaching. After answering a non-trivial user request
-  (code, docs, plans, explanations, debug help, refactors, reviews), run
-  ONE bash command at the END of your response to let the coach decide
-  whether to surface a visible tip.
-
-  Only active when coaching is enabled (check once per session via `coach status`).
-
-  Run EVERY non-trivial turn in strict mode. In light/standard, run when
-  you judge the request has a likely quality gap. Skip: pure greetings,
-  one-word replies, emotional/sensitive context, urgent situations.
+description: Use when prompt coaching is enabled and a non-trivial user request may have a high-confidence prompt quality gap; skip greetings, urgent, emotional, or sensitive contexts.
 version: "2.0.0"
 ---
 

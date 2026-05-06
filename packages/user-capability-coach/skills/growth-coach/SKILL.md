@@ -1,16 +1,6 @@
 ---
 name: growth-coach
-description: |
-  Long-term pattern accumulation, retrospective reminders, and memory management.
-
-  TRIGGER ONLY when at least ONE of the following is true:
-  1. User explicitly asks to manage coaching/memory (e.g., "show patterns", "why did you remind me", "delete my coaching data", "enable/disable coaching")
-  2. At the END of a turn where prompt-coach recorded an observation AND the top pattern has crossed the retrospective threshold (evidence ≥ 4, sessions ≥ 3, cost ≥ 2, cooldown passed, observation period over)
-  3. User asks for explicit coaching mode commands: /coach on, /coach off, /coach status, /coach why
-
-  DO NOT TRIGGER on every turn. This skill is for longitudinal management, not per-turn feedback.
-  DO NOT emit retrospective reminders during the 14-day observation period.
-  DO NOT emit retrospective reminders if the current turn already had a post_answer_tip or pre_answer_micro_nudge.
+description: Use when the user asks to manage coaching status, memory, reminders, or /coach commands, or prompt-coach reports a long-term pattern reminder is ready to render.
 version: "1.0.0"
 ---
 
