@@ -141,6 +141,19 @@ class TestSelectActionCLI:
         assert data["action"] == "silent_rewrite"
         assert data["issue_type"] is None
 
+    def test_short_developer_operation_returns_silent_rewrite(self, profile):
+        """A follow-up-style executable dev command should not trigger missing_goal."""
+        run_coach("enable", profile=profile)
+        result = run_coach(
+            "select-action", "--text", "提交并推送git吧",
+            "--session-id", "cli-dev-op", "--dry-run",
+            profile=profile,
+        )
+        assert result.returncode == 0, result.stderr
+        data = json.loads(result.stdout)
+        assert data["action"] == "silent_rewrite"
+        assert data["issue_type"] is None
+
     def test_output_has_required_fields(self, profile):
         """select-action output must always have all required fields."""
         run_coach("enable", profile=profile)

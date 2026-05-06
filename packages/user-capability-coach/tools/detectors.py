@@ -80,6 +80,20 @@ EXPLICIT_OUTPUT_VERB_RE = re.compile(
     re.IGNORECASE,
 )
 
+DEVELOPER_OPERATION_COMMAND_RE = re.compile(
+    r"^\s*(?:请|帮我|请帮我|麻烦(?:你)?|please|can you|could you)?\s*"
+    r"(?:"
+    r"(?:提交|commit)(?:.{0,12}(?:推送|push|git|代码|changes?))?"
+    r"|(?:推送|push)(?:.{0,12}(?:git|代码|changes?|branch|分支|main|origin))?"
+    r"|(?:拉取|pull)(?:.{0,12}(?:git|代码|changes?|branch|分支|main|origin))?"
+    r"|(?:合并|merge|变基|rebase)(?:.{0,12}(?:分支|branch|main|pr|pull request))?"
+    r"|(?:跑一下|跑|运行|执行|run)(?:.{0,10})(?:测试|test|tests|pytest|lint|build|构建|打包)"
+    r"|(?:发|开|创建|create|open)(?:个|一个)?\s*(?:pr|pull request)"
+    r")"
+    r"\s*(?:吧|一下|下|please)?\s*[\.\!\?。！？]*\s*$",
+    re.IGNORECASE,
+)
+
 
 LENGTH_PHRASE_RE = re.compile(
     r"\b(one.line|one.sentence|one.paragraph|one.word|in one|"
@@ -109,6 +123,8 @@ TRANSFORMATION_RE = re.compile(
 
 def _has_output_contract(text: str) -> bool:
     lower = text.lower()
+    if DEVELOPER_OPERATION_COMMAND_RE.match(text.strip()):
+        return True
     if any(w in lower for w in OUTPUT_FORMAT_WORDS_EN | OUTPUT_FORMAT_WORDS_ZH):
         return True
     if LENGTH_CONSTRAINT_RE.search(text):
@@ -383,6 +399,8 @@ def _text_length(text: str) -> int:
 
 def _has_clear_goal(text: str) -> bool:
     lower = text.lower()
+    if DEVELOPER_OPERATION_COMMAND_RE.match(text.strip()):
+        return True
     for v in GOAL_VERBS_EN:
         if re.search(r"(?<!\w)" + re.escape(v) + r"(?!\w)", lower):
             return True

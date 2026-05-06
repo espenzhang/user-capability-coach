@@ -53,6 +53,17 @@ class TestGoodPrompts:
         r = detect("What is the difference between TCP and UDP?")
         assert IssueType.MISSING_GOAL not in [c.issue_type for c in r.candidates]
 
+    def test_short_developer_operations_are_clear(self):
+        for text in [
+            "提交并推送git吧",
+            "跑一下测试",
+            "发个 PR",
+            "commit and push",
+            "run the tests",
+        ]:
+            r = detect(text)
+            assert not r.candidates, f"{text!r} should be treated as an executable command"
+
 
 # ── Weak prompts (must trigger specific issues) ─────────────────────────────
 
