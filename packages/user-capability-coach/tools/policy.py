@@ -131,6 +131,15 @@ def select_action(inp: PolicyInput, cfg: PolicyConfig = DEFAULT_CONFIG) -> Polic
                 reason="user recently dismissed coaching; silent_rewrite only",
                 suppressed_reason="user_dismissed",
             )
+        # Concrete executable operations ("pull latest git", "run tests",
+        # "install hatch-pet") already have an implicit success condition:
+        # execute and report. Pattern-based nudges feel noisy on these turns.
+        if detection.is_clear_operation:
+            return PolicyOutput(
+                action=Action.SILENT_REWRITE,
+                issue_type=None,
+                reason="clear operation command; suppress pattern coaching",
+            )
         # Session-level short-term pattern: if the user has shown the same
         # v1 issue in several recent turns of THIS session but the current
         # prompt is clean, surface a once-per-session nudge. This runs

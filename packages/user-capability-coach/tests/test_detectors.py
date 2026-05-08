@@ -56,6 +56,8 @@ class TestGoodPrompts:
     def test_short_developer_operations_are_clear(self):
         for text in [
             "提交并推送git吧",
+            "拉一下最新的线上git吧",
+            "拉最新代码",
             "跑一下测试",
             "发个 PR",
             "commit and push",

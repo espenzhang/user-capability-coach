@@ -27,6 +27,7 @@ class DetectionOutput:
     is_sensitive: bool
     task_complexity: float   # 0.0–1.0
     is_urgent: bool
+    is_clear_operation: bool = False
     candidates: list[DetectorResult] = field(default_factory=list)
 
 
@@ -86,6 +87,7 @@ DEVELOPER_OPERATION_COMMAND_RE = re.compile(
     r"(?:提交|commit)(?:.{0,12}(?:推送|push|git|代码|changes?))?"
     r"|(?:推送|push)(?:.{0,12}(?:git|代码|changes?|branch|分支|main|origin))?"
     r"|(?:拉取|pull)(?:.{0,12}(?:git|代码|changes?|branch|分支|main|origin))?"
+    r"|(?:拉一下|拉)(?:.{0,12}(?:git|代码|changes?|branch|分支|main|origin|线上|远端))"
     r"|(?:合并|merge|变基|rebase)(?:.{0,12}(?:分支|branch|main|pr|pull request))?"
     r"|(?:跑一下|跑|运行|执行|run)(?:.{0,10})(?:测试|test|tests|pytest|lint|build|构建|打包)"
     r"|(?:发|开|创建|create|open)(?:个|一个)?\s*(?:pr|pull request)"
@@ -468,6 +470,9 @@ WRITE_NO_SPEC_RE = re.compile(
 
 def _is_missing_goal(text: str) -> tuple[bool, float]:
     stripped = text.strip()
+    if _is_concrete_operation_request(stripped):
+        return False, 0.0
+
     # Trivially vague single-expression
     if VAGUE_ONLY_RE.match(stripped):
         return True, 0.95
@@ -983,6 +988,10 @@ def detect(text: str) -> DetectionOutput:
     is_sensitive = domain == Domain.SENSITIVE
     is_urgent = _is_urgent(text)
     complexity = _estimate_complexity(text)
+    is_clear_operation = bool(
+        DEVELOPER_OPERATION_COMMAND_RE.match(text.strip())
+        or _is_concrete_operation_request(text)
+    )
 
     candidates: list[DetectorResult] = []
 
@@ -1099,5 +1108,6 @@ def detect(text: str) -> DetectionOutput:
         is_sensitive=is_sensitive,
         task_complexity=complexity,
         is_urgent=is_urgent,
+        is_clear_operation=is_clear_operation,
         candidates=candidates,
     )

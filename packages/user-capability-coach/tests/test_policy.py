@@ -234,6 +234,24 @@ class TestRetrospective:
             last_notified_at=None,
         )
 
+    def test_clear_developer_operation_suppresses_retrospective(self):
+        """Clean executable dev commands should not surface retrospective coaching."""
+        inp = PolicyInput(
+            mode=CoachMode.STRICT,
+            detection=detect("拉一下最新的线上git吧"),
+            memory_enabled=True,
+            observation_period_ends_at=datetime.now(timezone.utc) - timedelta(days=20),
+            proactive_count_7d=0,
+            retrospective_count_7d=0,
+            last_notified_pattern=None,
+            last_notified_at=None,
+            user_dismissed_recently=False,
+            top_pattern=self._good_pattern(),
+        )
+        result = select_action(inp)
+        assert result.action == Action.SILENT_REWRITE
+        assert result.issue_type is None
+
     def test_should_emit_when_all_conditions_met(self):
         pat = self._good_pattern()
         inp = PolicyInput(

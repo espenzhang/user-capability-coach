@@ -144,15 +144,16 @@ class TestSelectActionCLI:
     def test_short_developer_operation_returns_silent_rewrite(self, profile):
         """A follow-up-style executable dev command should not trigger missing_goal."""
         run_coach("enable", profile=profile)
-        result = run_coach(
-            "select-action", "--text", "提交并推送git吧",
-            "--session-id", "cli-dev-op", "--dry-run",
-            profile=profile,
-        )
-        assert result.returncode == 0, result.stderr
-        data = json.loads(result.stdout)
-        assert data["action"] == "silent_rewrite"
-        assert data["issue_type"] is None
+        for text in ["提交并推送git吧", "拉一下最新的线上git吧"]:
+            result = run_coach(
+                "select-action", "--text", text,
+                "--session-id", "cli-dev-op", "--dry-run",
+                profile=profile,
+            )
+            assert result.returncode == 0, result.stderr
+            data = json.loads(result.stdout)
+            assert data["action"] == "silent_rewrite"
+            assert data["issue_type"] is None
 
     def test_concrete_skill_operation_returns_silent_rewrite(self, profile):
         """Concrete skill/file operations should not get output-format coaching."""
