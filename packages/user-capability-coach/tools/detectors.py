@@ -94,6 +94,33 @@ DEVELOPER_OPERATION_COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 
+OPERATION_VERB_RE = re.compile(
+    r"(安装|卸载|更新|升级|同步|复制|拷贝|移动|迁移|添加|加入|保存|落盘|"
+    r"放到|放进|整理到|重命名|命名|新建|创建|修复|改|优化|"
+    r"\b(?:install|uninstall|update|upgrade|sync|copy|move|migrate|"
+    r"add|save|put|rename|create|scaffold|fix|patch|optimi[sz]e)\b)",
+    re.IGNORECASE,
+)
+
+CONCRETE_OPERATION_TARGET_RE = re.compile(
+    r"(?:"
+    r"到|进|为|名叫|名字叫|叫|路径|目录|文件夹|仓库|项目|"
+    r"skills?|skill|AGENTS\.md|README|COACH|coach|"
+    r"[/~]|[\w.-]+\.(?:py|md|json|yaml|yml|toml|sql|sh)|"
+    r"\b(?:folder|directory|repo|repository|project|workspace|path|file|"
+    r"skill|skills|named|called|as)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+SIMPLE_PACKAGE_OPERATION_RE = re.compile(
+    r"^\s*(?:请|帮我|请帮我|麻烦(?:你)?|please|can you|could you)?\s*"
+    r"(?:安装|卸载|更新|升级|同步|"
+    r"\b(?:install|uninstall|update|upgrade|sync)\b)"
+    r".{1,80}\s*(?:吧|一下|下|please)?\s*[\.\!\?。！？]*\s*$",
+    re.IGNORECASE,
+)
+
 
 LENGTH_PHRASE_RE = re.compile(
     r"\b(one.line|one.sentence|one.paragraph|one.word|in one|"
@@ -125,6 +152,8 @@ def _has_output_contract(text: str) -> bool:
     lower = text.lower()
     if DEVELOPER_OPERATION_COMMAND_RE.match(text.strip()):
         return True
+    if _is_concrete_operation_request(text):
+        return True
     if any(w in lower for w in OUTPUT_FORMAT_WORDS_EN | OUTPUT_FORMAT_WORDS_ZH):
         return True
     if LENGTH_CONSTRAINT_RE.search(text):
@@ -146,6 +175,22 @@ def _has_output_contract(text: str) -> bool:
     if EXPLICIT_OUTPUT_VERB_RE.search(text) and len(text) > 30:
         return True
     return False
+
+
+def _is_concrete_operation_request(text: str) -> bool:
+    """Concrete workspace/package operations have an implicit contract:
+    execute the operation and report the result.
+
+    These prompts often do not need user-facing format words like "table" or
+    "markdown". Flagging them as missing_output_contract is noisy because the
+    requested artifact/location/name is already specified.
+    """
+    stripped = text.strip()
+    if SIMPLE_PACKAGE_OPERATION_RE.match(stripped):
+        return True
+    if not OPERATION_VERB_RE.search(stripped):
+        return False
+    return bool(CONCRETE_OPERATION_TARGET_RE.search(stripped))
 
 
 def _effective_length(text: str) -> int:
@@ -708,6 +753,8 @@ def _is_missing_success_criteria(text: str) -> tuple[bool, float]:
     Gated by prompt length (< 150 chars) so long prompts that describe
     success verbally without hitting our metric regex don't get flagged."""
     if not IMPROVE_VERB_RE.search(text):
+        return False, 0.0
+    if _is_concrete_operation_request(text):
         return False, 0.0
     if SUCCESS_METRIC_RE.search(text):
         return False, 0.0

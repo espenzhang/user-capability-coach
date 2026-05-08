@@ -64,6 +64,16 @@ class TestGoodPrompts:
             r = detect(text)
             assert not r.candidates, f"{text!r} should be treated as an executable command"
 
+    def test_concrete_workspace_operations_are_clear(self):
+        for text in [
+            "学习下这个skill，并放到项目的skills里，项目的skill名叫odps-standard",
+            "帮我把这个文件复制到项目的skills里，名字叫odps-standard",
+            "帮我安装下hatch-pet",
+            "你区分不了我的prompt和模型的思考。能优化下COACH-skills么",
+        ]:
+            r = detect(text)
+            assert not r.candidates, f"{text!r} should be treated as a concrete operation"
+
 
 # ── Weak prompts (must trigger specific issues) ─────────────────────────────
 

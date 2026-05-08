@@ -154,6 +154,20 @@ class TestSelectActionCLI:
         assert data["action"] == "silent_rewrite"
         assert data["issue_type"] is None
 
+    def test_concrete_skill_operation_returns_silent_rewrite(self, profile):
+        """Concrete skill/file operations should not get output-format coaching."""
+        run_coach("enable", profile=profile)
+        result = run_coach(
+            "select-action",
+            "--text", "学习下这个skill，并放到项目的skills里，项目的skill名叫odps-standard",
+            "--session-id", "cli-skill-op", "--dry-run",
+            profile=profile,
+        )
+        assert result.returncode == 0, result.stderr
+        data = json.loads(result.stdout)
+        assert data["action"] == "silent_rewrite"
+        assert data["issue_type"] is None
+
     def test_output_has_required_fields(self, profile):
         """select-action output must always have all required fields."""
         run_coach("enable", profile=profile)
