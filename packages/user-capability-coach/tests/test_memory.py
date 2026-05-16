@@ -106,6 +106,33 @@ class TestRecordObservation:
         assert row["evidence_summary"] == ""
         assert row["shadow_only"] == 1
 
+    def test_evidence_summary_is_bounded(self, profile):
+        obs_id = memory.record_observation(
+            session_id="sess_long_evidence",
+            domain=Domain.CODING,
+            issue_type=IssueType.MISSING_GOAL,
+            action_taken=Action.POST_ANSWER_TIP,
+            evidence_summary="x" * 800,
+            profile=profile,
+        )
+        import sqlite3
+        db_path = str(Path(profile) / "coach.db")
+        con = sqlite3.connect(db_path)
+        con.row_factory = sqlite3.Row
+        row = con.execute("SELECT * FROM observations WHERE id=?", (obs_id,)).fetchone()
+        con.close()
+
+        assert len(row["evidence_summary"]) == 500
+
+    def test_record_observation_writes_session_turn_in_same_transaction(self):
+        """record_observation should not call the public session-turn writer,
+        which opens its own transaction and can leave an orphan turn."""
+        import inspect
+
+        source = inspect.getsource(memory.record_observation)
+        assert "\n        record_session_turn(" not in source
+        assert "_insert_session_turn_locked(" in source
+
     def test_session_turns_accumulate_per_turn(self, profile):
         """Every record_observation call creates a session_turn, even when
         the observation itself is idempotently deduped."""
@@ -741,3 +768,70 @@ class TestReminderObservations:
         assert repaired["cost_count"] == 4
         assert repaired["score"] < 9.0
         assert repaired["last_notified_at"] == "2026-01-01T00:00:00+00:00"
+
+        row = sqlite3.connect(db).execute(
+            "SELECT value FROM schema_meta WHERE key='version'"
+        ).fetchone()
+        assert row[0] == str(memory.SCHEMA_VERSION)
+
+    def test_schema_v0_startup_upgrade_rebuilds_patterns_and_sets_v2(self, tmp_path):
+        import sqlite3
+
+        profile = str(tmp_path)
+        db_path = Path(profile) / "coach.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(db_path) as con:
+            con.executescript(memory.SCHEMA_SQL)
+            con.execute(
+                """INSERT INTO observations
+                   (id, ts, session_id, domain, issue_type, severity,
+                    confidence, fixability, cost_signal, action_taken,
+                    evidence_summary, shadow_only)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    "obs-v0",
+                    "2026-01-01T00:00:00+00:00",
+                    "legacy-v0",
+                    Domain.CODING.value,
+                    IssueType.MISSING_GOAL.value,
+                    0.8,
+                    0.9,
+                    0.9,
+                    CostSignal.HIGH_RISK_GUESS.value,
+                    Action.POST_ANSWER_TIP.value,
+                    "legacy row",
+                    0,
+                ),
+            )
+            con.execute(
+                """INSERT INTO patterns
+                   (issue_type, domain, score, evidence_count,
+                    distinct_sessions, cost_count, status)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (
+                    IssueType.MISSING_GOAL.value,
+                    Domain.CODING.value,
+                    99.0,
+                    99,
+                    99,
+                    99,
+                    PatternStatus.ACTIVE.value,
+                ),
+            )
+
+        memory._INITIALIZED_DBS.discard(str(db_path))
+        memory.init_db(profile=profile)
+
+        with sqlite3.connect(db_path) as con:
+            version = con.execute(
+                "SELECT value FROM schema_meta WHERE key='version'"
+            ).fetchone()[0]
+            pattern = con.execute(
+                "SELECT score, evidence_count, distinct_sessions, cost_count "
+                "FROM patterns WHERE issue_type=? AND domain=?",
+                (IssueType.MISSING_GOAL.value, Domain.CODING.value),
+            ).fetchone()
+
+        assert version == str(memory.SCHEMA_VERSION)
+        assert pattern[0] < 99.0
+        assert pattern[1:] == (1, 1, 1)

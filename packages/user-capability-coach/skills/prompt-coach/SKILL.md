@@ -50,18 +50,43 @@ remind me" — stay silent for 7 days. Never override.
 - Emotional, sensitive, or urgent context (the policy also suppresses
   these, but skipping the call saves a CLI hop)
 - You already emitted a coaching note this turn via growth-coach
+- Coaching feedback/control intents such as "误报", "哪里犯了",
+  "少教育我", "别提醒我", or "don't remind me". For dismissal requests,
+  run `coach dismiss` and do not render a coaching tip.
 
-## Advanced: passing agent_classification (optional)
+## Context-aware classification for professional work
 
-If you have high-value context (prior turns, repo state) that changes
-your judgment about the prompt, pass `--agent-json '<json-string>'` or
-pipe the full JSON on stdin — both accept the same classification
-schema (see `references/agent_classification.md`). Stdin-JSON mode does
-NOT auto-record (for backward compat); callers must separately invoke
+For non-trivial professional work, prefer passing your semantic judgment
+with `--agent-json` when you can see prior turns, repo state, or attached
+context. The regex-only `--text` path is still valid for simple cases, but
+visible coaching should be a high-precision signal: stay silent unless a
+missing detail is likely to cause real error, rework, or unsafe guessing.
+
+Clear professional tasks should normally be classified as no issue:
+
+```
+coach select-action \
+  --text="<verbatim last user message>" \
+  --session-id="<stable per-conversation id>" \
+  --agent-json='{"issue_type":null,"domain":"coding","evidence_summary":"clear professional task in context"}'
+```
+
+Use that null classification for clear review/debug/follow-up/repo
+operations, for example: "review this PR", "逐条核对 review comments",
+"把刚才发现的问题修掉", "跑 benchmark 看 regression", "检查 loss 曲线",
+"提交并推送git吧", or "跑一下测试".
+
+Only pass a non-null issue when the gap is specific and high confidence.
+For example, `missing_output_contract` is appropriate for deliverables
+whose usable shape materially matters, such as API docs, reports, PR
+descriptions, changelogs, tables, JSON/CSV, or templates. Do not use it
+for ordinary code review, debugging, test, git, benchmark, or follow-up
+execution requests whose intended action is already clear.
+
+`--agent-json` and stdin JSON accept the same classification schema (see
+`references/agent_classification.md`). Stdin-JSON mode does NOT
+auto-record (for backward compat); callers must separately invoke
 `record-observation` if they want pattern accumulation.
-
-The `--text`-only form (no agent_classification) is the default — use it
-unless you're confident the agent context beats rule-based detection.
 
 ## Example
 

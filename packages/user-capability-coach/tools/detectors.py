@@ -10,6 +10,8 @@ from typing import Any
 
 from .taxonomy import IssueType, Domain, CostSignal, SENSITIVE_KEYWORDS
 
+MAX_EVIDENCE_SUMMARY_CHARS = 500
+
 
 @dataclass
 class DetectorResult:
@@ -115,6 +117,71 @@ CONCRETE_OPERATION_TARGET_RE = re.compile(
     re.IGNORECASE,
 )
 
+COACHING_FEEDBACK_OR_CONTROL_RE = re.compile(
+    r"(^\s*(?:误报|哪里犯了|少教育我|别提醒我|不要提醒我|别再提醒)\s*[\.\!\?。！？]*\s*$"
+    r"|(?:为什么|怎么|哪里|又).{0,20}(?:误报|提醒|coach|coaching)"
+    r"|误报.{0,20}(?:提示|提醒|哪里|为什么|犯了)"
+    r"|"
+    r"don't remind me|do not remind me|stop reminding|stop coaching|"
+    r"why did you remind|why.*coaching)",
+    re.IGNORECASE,
+)
+
+REVIEW_OR_AUDIT_TASK_RE = re.compile(
+    r"("
+    r"\b(?:code\s+review|review\s+comments?|pr\s+review|pull\s+request)\b"
+    r"|\b(?:review|audit|inspect)\b.{0,40}\b(?:pr|pull\s+request|diff|patch|change|bug|bugs|risk|privacy)\b"
+    r"|\b(?:pr|pull\s+request)\b.{0,40}\b(?:bug|bugs|review|risk)\b"
+    r"|(?:整体|完整|再)?\s*(?:review|检查|审查|评审).{0,40}(?:改动|问题|bug|风险|隐私|误报)"
+    r"|(?:看下|看看|检查).{0,20}(?:PR|pr).{0,30}(?:bug|问题|风险)"
+    r"|review\s*一下.{0,40}(?:改动|问题|bug|风险|隐私|误报)"
+    r"|逐条核对.{0,60}(?:修|改|误报|说明)"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
+FOLLOWUP_EXECUTION_TASK_RE = re.compile(
+    r"("
+    r"^\s*(?:继续|接着来|go on|continue)\s*[\.\!\?。！？]*\s*$"
+    r"|(?:按|照)(?:上面|刚才|之前|前面|上述|以上).{0,30}(?:改|修|处理|执行|做|implement|fix|address)"
+    r"|(?:把|将)?(?:刚才|刚刚|上面|前面|之前|这些|上述|以上).{0,50}"
+    r"(?:问题|bug|comments?|review|意见|反馈|发现|提到|项).{0,30}"
+    r"(?:修掉|改掉|修|改|处理|解决|fix|address)"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
+ML_OR_BENCHMARK_TASK_RE = re.compile(
+    r"("
+    r"(?:跑|运行|执行|run).{0,30}(?:benchmark|benchmarks?|基准|评测|eval|evaluation).{0,40}(?:regression|回归|异常|差异)?"
+    r"|(?:benchmark|benchmarks?|基准|评测).{0,40}(?:regression|回归|异常|退化|diff|difference)"
+    r"|(?:检查|看|分析|定位|debug|investigate|check).{0,40}"
+    r"(?:loss|损失|曲线|training|训练|eval|evaluation|评估|model|模型|dataset|数据集|ablation|消融).{0,40}"
+    r"(?:异常|波动|regression|回归|下降|不收敛|nan|NaN)?"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
+DEBUG_OR_REGRESSION_TASK_RE = re.compile(
+    r"("
+    r"\b(?:debug|investigate|triage|diagnose)\b.{0,50}\b(?:bug|error|exception|regression|failure|crash)\b"
+    r"|\b(?:bug|error|exception|regression|failure)\b.{0,50}\b(?:debug|investigate|fix|find|check)\b"
+    r"|(?:调试|排查|定位|检查|看下).{0,40}(?:bug|报错|错误|异常|回归|退化|失败)"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
+OUTPUT_CONTRACT_DELIVERABLE_RE = re.compile(
+    r"("
+    r"接口文档|api\s*文档|文档|报告|总结|摘要|说明|说明书|模板|邮件|"
+    r"表格|列表|清单|提纲|规范|规格|变更日志|发布说明|pr\s*描述|"
+    r"\b(?:documentation|docs|document|report|writeup|summary|spec|specification|"
+    r"api\s+docs?|interface\s+spec|pr\s+description|pull\s+request\s+description|"
+    r"changelog|release\s+notes|template|table|json|csv|yaml|markdown|output|something)\b"
+    r")",
+    re.IGNORECASE,
+)
+
 SIMPLE_PACKAGE_OPERATION_RE = re.compile(
     r"^\s*(?:请|帮我|请帮我|麻烦(?:你)?|please|can you|could you)?\s*"
     r"(?:安装|卸载|更新|升级|同步|"
@@ -122,6 +189,29 @@ SIMPLE_PACKAGE_OPERATION_RE = re.compile(
     r".{1,80}\s*(?:吧|一下|下|please)?\s*[\.\!\?。！？]*\s*$",
     re.IGNORECASE,
 )
+
+
+def _is_clear_professional_task(text: str) -> bool:
+    stripped = text.strip()
+    return any(pattern.search(stripped) for pattern in (
+        COACHING_FEEDBACK_OR_CONTROL_RE,
+        DEVELOPER_OPERATION_COMMAND_RE,
+        REVIEW_OR_AUDIT_TASK_RE,
+        FOLLOWUP_EXECUTION_TASK_RE,
+        ML_OR_BENCHMARK_TASK_RE,
+        DEBUG_OR_REGRESSION_TASK_RE,
+    ))
+
+
+def _needs_output_contract(text: str) -> bool:
+    stripped = text.strip()
+    if _is_clear_professional_task(stripped):
+        return False
+    if OUTPUT_CONTRACT_DELIVERABLE_RE.search(stripped):
+        return True
+    # Short generic output-generation requests are precisely where format
+    # ambiguity matters, even though they may not name a document/report.
+    return bool(EXPLICIT_OUTPUT_VERB_RE.search(stripped) and _effective_length(stripped) <= 4)
 
 
 LENGTH_PHRASE_RE = re.compile(
@@ -152,7 +242,7 @@ TRANSFORMATION_RE = re.compile(
 
 def _has_output_contract(text: str) -> bool:
     lower = text.lower()
-    if DEVELOPER_OPERATION_COMMAND_RE.match(text.strip()):
+    if _is_clear_professional_task(text):
         return True
     if _is_concrete_operation_request(text):
         return True
@@ -305,6 +395,9 @@ def _is_comma_enumeration(text: str) -> bool:
 
 
 def _is_overloaded(text: str) -> tuple[bool, float]:
+    if REVIEW_OR_AUDIT_TASK_RE.search(text):
+        return False, 0.0
+
     verb_count = _count_action_verbs(text)
     conjunction_count = len(CONJUNCTION_RE.findall(text))
     comma_count = text.count(",") + text.count("，") + text.count("、")
@@ -446,7 +539,7 @@ def _text_length(text: str) -> int:
 
 def _has_clear_goal(text: str) -> bool:
     lower = text.lower()
-    if DEVELOPER_OPERATION_COMMAND_RE.match(text.strip()):
+    if _is_clear_professional_task(text):
         return True
     for v in GOAL_VERBS_EN:
         if re.search(r"(?<!\w)" + re.escape(v) + r"(?!\w)", lower):
@@ -904,6 +997,10 @@ def _resolve_cost_signal(raw: str | None) -> CostSignal:
         return CostSignal.NONE
 
 
+def _bounded_evidence_summary(raw: Any) -> str:
+    return str(raw or "")[:MAX_EVIDENCE_SUMMARY_CHARS]
+
+
 def build_detection_from_agent(
     agent_cls: dict[str, Any],
     text: str,
@@ -957,7 +1054,7 @@ def build_detection_from_agent(
             severity=_clamp(agent_cls.get("severity", 0.0)),
             fixability=_clamp(agent_cls.get("fixability", 0.0)),
             cost_signal=cost,
-            evidence=str(agent_cls.get("evidence_summary", "")),
+            evidence=_bounded_evidence_summary(agent_cls.get("evidence_summary", "")),
         ))
 
     return DetectionOutput(
@@ -1003,8 +1100,15 @@ def detect(text: str) -> DetectionOutput:
         )
 
     if not is_sensitive:
+        if _is_clear_professional_task(text):
+            return DetectionOutput(
+                domain=domain, is_sensitive=False,
+                task_complexity=complexity, is_urgent=is_urgent,
+                is_clear_operation=is_clear_operation, candidates=[],
+            )
+
         # Check missing_output_contract
-        if not _has_output_contract(text):
+        if _needs_output_contract(text) and not _has_output_contract(text):
             chinese_chars = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
             is_chinese = chinese_chars > len(text) * 0.3
             eff_len = _effective_length(text)

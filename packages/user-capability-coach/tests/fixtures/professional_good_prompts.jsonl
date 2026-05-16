@@ -1,0 +1,12 @@
+{"id": "pg001", "text": "你再整体检查一遍，有什么问题么，我经常收到误报的", "expected_issue": null, "expected_action": "silent_rewrite", "lang": "zh", "domain": "coding", "notes": "clear professional review request plus coaching false-positive complaint"}
+{"id": "pg002", "text": "这些 review comments 逐条核对，正确的修，误报说明原因", "expected_issue": null, "expected_action": "silent_rewrite", "lang": "zh", "domain": "coding", "notes": "structured code-review feedback handling"}
+{"id": "pg003", "text": "整体 review 一下这次改动，重点看误报和隐私风险", "expected_issue": null, "expected_action": "silent_rewrite", "lang": "zh", "domain": "coding", "notes": "clear review scope"}
+{"id": "pg004", "text": "看下这个 PR 有没有明显 bug", "expected_issue": null, "expected_action": "silent_rewrite", "lang": "zh", "domain": "coding", "notes": "PR review request"}
+{"id": "pg005", "text": "把刚才发现的问题修掉", "expected_issue": null, "expected_action": "silent_rewrite", "lang": "zh", "domain": "coding", "notes": "follow-up execution with prior context"}
+{"id": "pg006", "text": "跑 benchmark，看有没有 regression", "expected_issue": null, "expected_action": "silent_rewrite", "lang": "zh", "domain": "coding", "notes": "benchmark/regression check"}
+{"id": "pg007", "text": "检查一下 loss 曲线异常", "expected_issue": null, "expected_action": "silent_rewrite", "lang": "zh", "domain": "coding", "notes": "ML experiment debugging"}
+{"id": "pg008", "text": "提交并推送git吧", "expected_issue": null, "expected_action": "silent_rewrite", "lang": "zh", "domain": "coding", "notes": "repo operation"}
+{"id": "pg009", "text": "跑一下测试", "expected_issue": null, "expected_action": "silent_rewrite", "lang": "zh", "domain": "coding", "notes": "test command"}
+{"id": "pg010", "text": "少教育我", "expected_issue": null, "expected_action": "silent_rewrite", "lang": "zh", "domain": "other", "notes": "coaching control intent"}
+{"id": "pg011", "text": "Please review this PR for obvious bugs.", "expected_issue": null, "expected_action": "silent_rewrite", "lang": "en", "domain": "coding", "notes": "English PR review"}
+{"id": "pg012", "text": "Run the benchmark suite and check for regressions.", "expected_issue": null, "expected_action": "silent_rewrite", "lang": "en", "domain": "coding", "notes": "English benchmark/regression operation"}

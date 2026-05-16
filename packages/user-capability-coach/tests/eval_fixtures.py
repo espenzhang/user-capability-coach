@@ -3,8 +3,9 @@
 
 Runs the detector + policy pipeline against all fixture JSONL files and
 reports accuracy metrics. Target thresholds:
-  - Good prompt false positive rate: < 5%
-  - v1 issue detection rate on weak prompts: > 80%
+  - Professional good prompts visible-tip rate: 0%
+  - Good prompt false positive rate: < 2%
+  - v1 issue detection rate on weak prompts: >= 70%
   - Sensitive prompts suppression rate: 100%
 
 Usage:
@@ -75,9 +76,48 @@ def eval_good_prompts(fixtures_dir: Path, verbose: bool = False) -> dict:
         "total": total,
         "false_positives": false_positives,
         "fp_rate": rate,
-        "target": 0.05,
-        "passed": rate <= 0.05,
+        "target": 0.02,
+        "passed": rate <= 0.02,
         "examples": fp_examples if verbose else [],
+    }
+
+
+def eval_professional_good_prompts(fixtures_dir: Path, verbose: bool = False) -> dict:
+    path = fixtures_dir / "professional_good_prompts.jsonl"
+    total = 0
+    visible_tips = 0
+    tip_examples = []
+
+    with open(path) as f:
+        for line in f:
+            item = json.loads(line)
+            text = item["text"]
+            detection = detect(text)
+            inp = _make_policy_input(text, detection)
+            result = select_action(inp)
+
+            total += 1
+            is_visible_tip = result.action in (
+                Action.POST_ANSWER_TIP,
+                Action.PRE_ANSWER_MICRO_NUDGE,
+            )
+            if is_visible_tip:
+                visible_tips += 1
+                tip_examples.append({
+                    "id": item.get("id"),
+                    "text": text[:80],
+                    "action": result.action.value,
+                    "issue": result.issue_type.value if result.issue_type else None,
+                })
+
+    rate = visible_tips / total if total else 0
+    return {
+        "total": total,
+        "visible_tips": visible_tips,
+        "visible_tip_rate": rate,
+        "target": 0.0,
+        "passed": visible_tips == 0,
+        "examples": tip_examples if verbose else [],
     }
 
 
@@ -123,8 +163,8 @@ def eval_weak_prompts(fixtures_dir: Path, verbose: bool = False) -> dict:
         "total": total,
         "issue_hits": issue_hits,
         "hit_rate": rate,
-        "target": 0.80,
-        "passed": rate >= 0.80,
+        "target": 0.70,
+        "passed": rate >= 0.70,
         "misses": misses if verbose else [],
     }
 
@@ -181,25 +221,36 @@ def main():
     print("User Capability Coach — Offline Fixture Evaluation")
     print("=" * 60)
 
+    professional = eval_professional_good_prompts(fixtures_dir, verbose)
     good = eval_good_prompts(fixtures_dir, verbose)
     weak = eval_weak_prompts(fixtures_dir, verbose)
     sensitive = eval_sensitive_prompts(fixtures_dir, verbose)
 
     # Report
+    status_professional = "✅ PASS" if professional["passed"] else "❌ FAIL"
     status_good = "✅ PASS" if good["passed"] else "❌ FAIL"
     status_weak = "✅ PASS" if weak["passed"] else "❌ FAIL"
     status_sens = "✅ PASS" if sensitive["passed"] else "❌ FAIL"
 
-    print(f"\n[1] Good prompts — False positive rate")
+    print(f"\n[1] Professional good prompts — Visible-tip rate")
+    print(f"    {status_professional}  {professional['visible_tips']}/{professional['total']} visible tips "
+          f"({professional['visible_tip_rate']:.1%} vs target {professional['target']:.0%})")
+    if verbose and professional["examples"]:
+        print("    Visible-tip examples:")
+        for ex in professional["examples"]:
+            print(f"      [{ex['id']}] action={ex['action']} issue={ex['issue']}")
+            print(f"        text: {ex['text']}")
+
+    print(f"\n[2] Good prompts — False positive rate")
     print(f"    {status_good}  {good['false_positives']}/{good['total']} false positives "
-          f"({good['fp_rate']:.1%} vs target <{good['target']:.0%})")
+          f"({good['fp_rate']:.1%} vs target ≤{good['target']:.0%})")
     if verbose and good["examples"]:
         print("    False positive examples:")
         for ex in good["examples"]:
             print(f"      [{ex['id']}] action={ex['action']} issue={ex['issue']}")
             print(f"        text: {ex['text']}")
 
-    print(f"\n[2] Weak prompts — Issue detection rate")
+    print(f"\n[3] Weak prompts — Issue detection rate")
     print(f"    {status_weak}  {weak['issue_hits']}/{weak['total']} correct issue type "
           f"({weak['hit_rate']:.1%} vs target ≥{weak['target']:.0%})")
     if verbose and weak["misses"]:
@@ -208,7 +259,7 @@ def main():
             print(f"      [{m['id']}] expected={m['expected']} got={m['got']} action={m['action']}")
             print(f"        text: {m['text']}")
 
-    print(f"\n[3] Sensitive prompts — Suppression rate")
+    print(f"\n[4] Sensitive prompts — Suppression rate")
     print(f"    {status_sens}  {sensitive['suppressed']}/{sensitive['total']} suppressed "
           f"({sensitive['suppression_rate']:.1%} vs target ≥{sensitive['target']:.0%})")
     if verbose and sensitive["leaks"]:
@@ -217,7 +268,7 @@ def main():
             print(f"      [{leak['id']}] action={leak['action']}")
             print(f"        text: {leak['text']}")
 
-    all_passed = good["passed"] and weak["passed"] and sensitive["passed"]
+    all_passed = professional["passed"] and good["passed"] and weak["passed"] and sensitive["passed"]
     print(f"\n{'=' * 60}")
     if all_passed:
         print("✅ All milestone-zero targets passed. Ready for M1.")

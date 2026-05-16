@@ -207,14 +207,23 @@ def _persist_observation_core(
     """
     # memory_enabled=false → don't persist observations. Emit a single
     # short-term session turn so session nudges still work, but do not
-    # write longitudinal observations/patterns.
+    # write longitudinal observations/patterns. Sensitive turns are the
+    # exception: without explicit sensitive logging, even the domain label is
+    # a privacy signal, so skip the short-term row entirely.
     if not cfg["memory_enabled"]:
         session_issue_type = issue_type
         session_shadow_only = shadow_only
-        if domain == Domain.SENSITIVE and not cfg.get("sensitive_logging_enabled", False):
+        skip_session_turn = (
+            domain == Domain.SENSITIVE
+            and not cfg.get("sensitive_logging_enabled", False)
+        )
+        if skip_session_turn:
             session_issue_type = None
             session_shadow_only = True
-        if action not in (Action.RETROSPECTIVE_REMINDER, Action.SESSION_PATTERN_NUDGE):
+        if (
+            not skip_session_turn
+            and action not in (Action.RETROSPECTIVE_REMINDER, Action.SESSION_PATTERN_NUDGE)
+        ):
             memory.record_session_turn(
                 session_id=session_id,
                 issue_type=session_issue_type,

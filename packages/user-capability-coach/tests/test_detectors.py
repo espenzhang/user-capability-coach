@@ -8,6 +8,20 @@ from tools.detectors import detect, DetectionOutput
 from tools.taxonomy import IssueType, Domain
 
 
+PROFESSIONAL_GOOD_PROMPTS = [
+    "你再整体检查一遍，有什么问题么，我经常收到误报的",
+    "这些 review comments 逐条核对，正确的修，误报说明原因",
+    "整体 review 一下这次改动，重点看误报和隐私风险",
+    "看下这个 PR 有没有明显 bug",
+    "把刚才发现的问题修掉",
+    "跑 benchmark，看有没有 regression",
+    "检查一下 loss 曲线异常",
+    "提交并推送git吧",
+    "跑一下测试",
+    "少教育我",
+]
+
+
 def _issue_types(result: DetectionOutput) -> list[str]:
     return [c.issue_type.value for c in result.candidates]
 
@@ -75,6 +89,11 @@ class TestGoodPrompts:
         ]:
             r = detect(text)
             assert not r.candidates, f"{text!r} should be treated as a concrete operation"
+
+    def test_professional_clear_tasks_are_silent(self):
+        for text in PROFESSIONAL_GOOD_PROMPTS:
+            r = detect(text)
+            assert not r.candidates, f"{text!r} should be treated as a clear professional task"
 
 
 # ── Weak prompts (must trigger specific issues) ─────────────────────────────
@@ -277,6 +296,21 @@ class TestDetectorInvariants:
         assert out.candidates[0].issue_type == IssueType.MISSING_GOAL
         assert out.candidates[0].confidence == 0.9
         assert out.domain.value == "coding"
+
+    def test_build_detection_from_agent_truncates_evidence(self):
+        from tools.detectors import build_detection_from_agent
+        out = build_detection_from_agent(
+            {
+                "issue_type": "missing_goal",
+                "confidence": 0.9,
+                "severity": 0.8,
+                "domain": "coding",
+                "evidence_summary": "x" * 800,
+            },
+            "some text",
+        )
+        assert out is not None
+        assert len(out.candidates[0].evidence) == 500
 
     def test_build_detection_from_agent_null_issue(self):
         """Agent saying null = no candidate (suppresses rule false-positive)."""

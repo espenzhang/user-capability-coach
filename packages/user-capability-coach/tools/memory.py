@@ -38,6 +38,7 @@ SILENT_DECISION_ACTIONS = frozenset({
 
 
 SCHEMA_VERSION = 2
+MAX_EVIDENCE_SUMMARY_CHARS = 500
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -396,30 +397,29 @@ def record_observation(
         shadow_only = True
 
     counts_as_evidence = action_taken.value not in NON_EVIDENCE_ACTIONS
-
-    # Session-level short-term turn record. Written on EVERY call — even
-    # when observation-layer idempotency below dedupes the current call —
-    # because session_turns tracks per-turn granularity ("3 vague turns
-    # in a row") whereas observations/patterns track per-session dedupd
-    # evidence. Recording outside the `with _conn` block below keeps the
-    # two writes in separate transactions, which is fine: if a crash
-    # loses the session_turn, the observation still stands.
-    if counts_as_evidence:
-        record_session_turn(
-            session_id=session_id,
-            issue_type=issue_type,
-            domain=domain,
-            severity=severity,
-            confidence=confidence,
-            shadow_only=shadow_only,
-            platform=platform,
-            profile=profile,
-        )
+    evidence_summary = str(evidence_summary or "")[:MAX_EVIDENCE_SUMMARY_CHARS]
 
     # Use IMMEDIATE so the idempotency SELECT + INSERT pair is atomic
     # against other writers. Otherwise two concurrent writes of the same
     # (session, issue) pair can both miss the existing row and each INSERT.
     with _conn(platform, profile, immediate=True) as con:
+        # Session-level short-term turn record. Written on EVERY call — even
+        # when observation-layer idempotency below dedupes the current call —
+        # because session_turns tracks per-turn granularity ("3 vague turns
+        # in a row") whereas observations/patterns track per-session deduped
+        # evidence. Keep it inside this transaction so a crash cannot leave a
+        # session_turn without the corresponding observation write.
+        if counts_as_evidence:
+            _insert_session_turn_locked(
+                con,
+                session_id=session_id,
+                issue_type=issue_type,
+                domain=domain,
+                severity=severity,
+                confidence=confidence,
+                shadow_only=shadow_only,
+            )
+
         # Idempotent: if same session+issue_type already recorded, skip
         if issue_type is not None:
             existing = con.execute(
@@ -1180,6 +1180,39 @@ def repair_pattern_state(
 # session-level nudge twice within one session.
 
 
+def _insert_session_turn_locked(
+    con: sqlite3.Connection,
+    *,
+    session_id: str,
+    issue_type: IssueType | None,
+    domain: Domain,
+    severity: float = 0.0,
+    confidence: float = 0.0,
+    shadow_only: bool = False,
+) -> str:
+    turn_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    row = con.execute(
+        "SELECT MAX(turn_index) as mx FROM session_turns WHERE session_id=?",
+        (session_id,),
+    ).fetchone()
+    next_idx = ((row["mx"] if row and row["mx"] is not None else 0) + 1)
+    con.execute(
+        """INSERT INTO session_turns
+           (id, session_id, ts, turn_index, issue_type, domain,
+            severity, confidence, shadow_only)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (
+            turn_id, session_id, now, next_idx,
+            issue_type.value if issue_type else None,
+            domain.value if domain else None,
+            severity, confidence,
+            1 if shadow_only else 0,
+        ),
+    )
+    return turn_id
+
+
 def record_session_turn(
     session_id: str,
     issue_type: IssueType | None,
@@ -1195,28 +1228,16 @@ def record_session_turn(
     every observation also contributes to the short-term pattern store.
     Uses BEGIN IMMEDIATE because turn_index is computed via SELECT MAX()
     + 1 and two concurrent writes would otherwise race to the same index."""
-    turn_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
     with _conn(platform, profile, immediate=True) as con:
-        row = con.execute(
-            "SELECT MAX(turn_index) as mx FROM session_turns WHERE session_id=?",
-            (session_id,),
-        ).fetchone()
-        next_idx = ((row["mx"] if row and row["mx"] is not None else 0) + 1)
-        con.execute(
-            """INSERT INTO session_turns
-               (id, session_id, ts, turn_index, issue_type, domain,
-                severity, confidence, shadow_only)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (
-                turn_id, session_id, now, next_idx,
-                issue_type.value if issue_type else None,
-                domain.value if domain else None,
-                severity, confidence,
-                1 if shadow_only else 0,
-            ),
+        return _insert_session_turn_locked(
+            con,
+            session_id=session_id,
+            issue_type=issue_type,
+            domain=domain,
+            severity=severity,
+            confidence=confidence,
+            shadow_only=shadow_only,
         )
-    return turn_id
 
 
 def get_session_pattern(

@@ -30,14 +30,16 @@ for skill in prompt-coach growth-coach; do
     cp -r "$src" "$dst"
 done
 
-# 2. Create data directory, copy CLI tools, and initialize DB
+# 2. Create data directory, publish a versioned CLI tools release, and initialize DB
 mkdir -p "$DATA_DIR"
-rm -rf "$DATA_DIR/tools"
-cp -r "$PACKAGE_DIR/tools" "$DATA_DIR/tools"
+TOOLS_RELEASES="$DATA_DIR/tool-releases"
+TOOLS_RELEASE="$TOOLS_RELEASES/$(date +%Y%m%d%H%M%S)-$$"
+mkdir -p "$TOOLS_RELEASE"
+cp -r "$PACKAGE_DIR/tools" "$TOOLS_RELEASE/tools"
 python3 -c "
 import sys, json
 from pathlib import Path
-sys.path.insert(0, '$DATA_DIR')
+sys.path.insert(0, '$TOOLS_RELEASE')
 from tools import memory, settings
 memory.init_db(profile='$DATA_DIR')
 # Write default config only if not already present (preserve existing user settings)
@@ -48,11 +50,13 @@ if not cfg_path.exists():
 
 # 3. Set up coach wrapper script
 COACH_BIN="$DATA_DIR/coach"
-cat > "$COACH_BIN" <<WRAPPER
+COACH_BIN_TMP="$COACH_BIN.tmp.$$"
+cat > "$COACH_BIN_TMP" <<WRAPPER
 #!/usr/bin/env bash
-exec python3 "$DATA_DIR/tools/cli.py" --profile "$DATA_DIR" "\$@"
+exec python3 "$TOOLS_RELEASE/tools/cli.py" --profile "$DATA_DIR" "\$@"
 WRAPPER
-chmod +x "$COACH_BIN"
+chmod +x "$COACH_BIN_TMP"
+mv -f "$COACH_BIN_TMP" "$COACH_BIN"
 
 # Also create a symlink in ~/.local/bin if it exists
 if [ -d "$HOME/.local/bin" ]; then

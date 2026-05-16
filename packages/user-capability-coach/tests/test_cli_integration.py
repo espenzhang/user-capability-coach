@@ -20,6 +20,19 @@ CODEX_INSTALL = str(PACKAGE_DIR / "adapters" / "codex" / "install.sh")
 CODEX_UNINSTALL = str(PACKAGE_DIR / "adapters" / "codex" / "uninstall.sh")
 CLAUDE_INSTALL = str(PACKAGE_DIR / "adapters" / "claude-code" / "install.sh")
 
+PROFESSIONAL_GOOD_PROMPTS = [
+    "你再整体检查一遍，有什么问题么，我经常收到误报的",
+    "这些 review comments 逐条核对，正确的修，误报说明原因",
+    "整体 review 一下这次改动，重点看误报和隐私风险",
+    "看下这个 PR 有没有明显 bug",
+    "把刚才发现的问题修掉",
+    "跑 benchmark，看有没有 regression",
+    "检查一下 loss 曲线异常",
+    "提交并推送git吧",
+    "跑一下测试",
+    "少教育我",
+]
+
 
 def run_coach(*args, stdin_data: str | None = None, profile: str | None = None) -> subprocess.CompletedProcess:
     cmd = [sys.executable, CLI]
@@ -169,6 +182,20 @@ class TestSelectActionCLI:
         assert data["action"] == "silent_rewrite"
         assert data["issue_type"] is None
 
+    def test_professional_clear_tasks_return_silent_rewrite(self, profile):
+        """Professional engineering commands should not produce visible coaching."""
+        run_coach("enable", profile=profile)
+        for idx, text in enumerate(PROFESSIONAL_GOOD_PROMPTS):
+            result = run_coach(
+                "select-action", "--text", text,
+                "--session-id", f"cli-professional-{idx}", "--dry-run",
+                profile=profile,
+            )
+            assert result.returncode == 0, result.stderr
+            data = json.loads(result.stdout)
+            assert data["action"] == "silent_rewrite", text
+            assert data["issue_type"] is None, text
+
     def test_output_has_required_fields(self, profile):
         """select-action output must always have all required fields."""
         run_coach("enable", profile=profile)
@@ -309,10 +336,9 @@ class TestSelectActionBareText:
         assert data["action"] == "none"
         assert data["is_sensitive"] is True
 
-    def test_bare_text_sensitive_memory_off_records_shadow_session_turn(self, profile):
-        """With memory disabled, sensitive turns may be counted locally for
-        session mechanics but must stay shadow_only so they cannot feed
-        visible pattern nudges or contradict the privacy contract."""
+    def test_bare_text_sensitive_memory_off_skips_session_turn(self, profile):
+        """With memory disabled, sensitive turns should not persist even a
+        domain-only session_turn unless sensitive logging is explicitly on."""
         import sqlite3
 
         run_coach("enable", profile=profile)
@@ -334,10 +360,7 @@ class TestSelectActionBareText:
         ).fetchall()
         con.close()
 
-        assert len(rows) == 1
-        assert rows[0]["domain"] == "sensitive"
-        assert rows[0]["issue_type"] is None
-        assert rows[0]["shadow_only"] == 1
+        assert rows == []
 
     def test_bare_text_missing_session_id_generates_fallback(self, profile):
         """Missing --session-id falls back to a one-shot anon-* id + stderr warn."""
@@ -738,13 +761,13 @@ class TestClaudeInstallScripts:
         home = Path(env["HOME"])
         data_dir = home / ".claude" / "user-capability-coach"
         wrapper = data_dir / "coach"
-        installed_cli = data_dir / "tools" / "cli.py"
+        releases = sorted((data_dir / "tool-releases").glob("*/tools/cli.py"))
 
         assert wrapper.exists()
-        assert installed_cli.exists()
+        assert releases
         wrapper_text = wrapper.read_text()
         assert str(PACKAGE_DIR) not in wrapper_text
-        assert str(installed_cli) in wrapper_text
+        assert str(releases[-1]) in wrapper_text
 
         status = subprocess.run(
             [str(wrapper), "status"],
@@ -755,6 +778,13 @@ class TestClaudeInstallScripts:
         )
         assert status.returncode == 0, status.stderr
         assert "off" in status.stdout.lower()
+
+    def test_claude_install_avoids_in_place_tools_replacement(self):
+        """Reinstalling should not rm/cp the active tools package in place."""
+        script = Path(CLAUDE_INSTALL).read_text()
+        assert 'rm -rf "$DATA_DIR/tools"' not in script
+        assert 'cp -r "$PACKAGE_DIR/tools" "$DATA_DIR/tools"' not in script
+        assert "tool-releases" in script
 
 
 class TestMemoryExportCLI:
